@@ -17,6 +17,7 @@ from joblib import Parallel, delayed
 
 from .stage1_preprocessing import PreprocessedData
 from .metrics import MetricComputer, MetricRegistry, get_metric_registry
+from .utils import active_metrics as _active_metrics, build_age_columns, print_metric_summary
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ class Stage2Metrics:
         Returns:
             List of enabled metric names
         """
-        return [m for m, enabled in cfg['metrics'].items() if enabled]
+        return _active_metrics(cfg)
 
     def execute(self) -> pd.DataFrame:
         """
@@ -223,44 +224,12 @@ class Stage2Metrics:
             DataFrame
         """
         logger.info("[Stage2] Building DataFrame...")
-
         df = pd.DataFrame(results_list)
-
-        # Add age columns
-        age = self.preprocessed.age
-        if self.cfg['age']['unit'] == 'month':
-            df.insert(0, 'age_months', age)
-            df.insert(1, 'age_years', age / 12.0)
-        else:
-            df.insert(0, 'age_years', age)
-            df.insert(1, 'age_months', age * 12.0)
-
-        return df
+        return build_age_columns(df, self.preprocessed.age, self.cfg)
 
     def _print_summary(self, df: pd.DataFrame, metric_names: List[str]):
-        """
-        Print summary statistics for computed metrics.
-
-        Args:
-            df: Results DataFrame
-            metric_names: List of metric names
-        """
-        logger.info(f"\n{'='*50}")
-        logger.info(f"  Summary: {len(df)} subjects, "
-                   f"age {df['age_years'].min():.1f}~{df['age_years'].max():.1f} years")
-        logger.info(f"{'='*50}")
-
-        for mname in metric_names:
-            if mname not in df.columns:
-                continue
-
-            v = df[mname].replace([np.inf, -np.inf], np.nan).dropna()
-            if len(v) == 0:
-                logger.info(f"  {mname:12s}: No valid values")
-                continue
-
-            logger.info(f"  {mname:12s}: mean={v.mean():.4f}  std={v.std():.4f}  "
-                       f"median={v.median():.4f}  (n={len(v)})")
+        """Print summary statistics for computed metrics."""
+        print_metric_summary(df, metric_names)
 
 
 # ================================================================

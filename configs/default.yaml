@@ -10,6 +10,15 @@ paths:
   output_dir: "results"
   subregion_file: "data/brainnetome/BNA_subregions.xlsx"
 
+# --- Preprocessing ---
+# threshold_method: how to binarise the connectivity matrix
+#   "proportional"  — keep top *density* fraction of edges (default)
+#   "absolute"      — keep edges with |w| >= absolute_threshold
+#   "mst"           — minimum spanning tree + top density fill
+preprocessing:
+  threshold_method: "proportional"    # "proportional" | "absolute" | "mst"
+  absolute_threshold: null            # used only when method = "absolute"
+
 # --- Network Parameters ---
 network:
   net_size: 246               # Brainnetome atlas node count
@@ -17,18 +26,24 @@ network:
   frac: 0.05                  # DC: top 5% high-degree nodes
   pc_threshold: 0.50          # Provincial <= 0.5, Connector > 0.5
   frac_search_range: [0.01, 0.50, 0.01]  # start, stop, step for newDC
+  null_n: 200                 # number of null graphs per subject (start with 30~50 to test)
+  null_swaps_per_edge: 10     # Maslov–Sneppen swaps per edge
+  null_seed: 0                # reproducibility (optional)
 
+  
 # --- Metrics (on/off) ---
 metrics:
-  MDS_size: true
-  Deg_conc: true
+  MDS_size: false
+  Deg_conc: false
   DC: true
   OCA: true
-  newDC: true
-  DC_PC: true
-  OCA_P: true
-  OCA_C: true
-  Prov_ratio: true
+  DC_z: true
+  OCA_z: true
+  newDC: false
+  DC_PC: false
+  OCA_P: false
+  OCA_C: false
+  Prov_ratio: false
 
 # --- Subregion ---
 # null = whole brain. Or specify label from BNA_subregions.xlsx

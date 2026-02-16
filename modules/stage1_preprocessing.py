@@ -176,36 +176,22 @@ class Stage1Preprocessing:
         List[np.ndarray], List[np.ndarray], List[np.ndarray]
     ]:
         """
-        Preprocess all subjects: threshold, compute MDSet, identify top nodes.
-
-        Args:
-            conn_list: List of raw connectivity matrices
+        Preprocess all subjects: threshold → MDSet → top nodes.
 
         Returns:
             (conn_binary, mdsets, top_nodes)
         """
         logger.info("[Step 3] Preprocessing networks...")
 
-        density = self.cfg['network']['density']
-        frac = self.cfg['network']['frac']
         n_subjects = len(conn_list)
-
         conn_binary = []
         mdsets = []
         top_nodes = []
 
         for i, conn in enumerate(conn_list):
-            # Proportional thresholding
-            adj = self.network_analyzer.proportional_threshold(conn, density)
-
-            # Create analyzer for this subject
-            analyzer = NetworkAnalyzer(adj)
-
-            # Compute MDSet
-            mdset = analyzer.find_mdset(use_cache=True)
-
-            # Identify high-degree nodes
-            top = analyzer.top_degree_nodes(frac)
+            adj = self._threshold(conn)
+            mdset = self._compute_mdset(adj)
+            top = self._compute_top_nodes(adj)
 
             conn_binary.append(adj)
             mdsets.append(mdset)
@@ -214,10 +200,109 @@ class Stage1Preprocessing:
             if (i + 1) % 50 == 0:
                 logger.info(f"[Step 3] Processed {i+1}/{n_subjects} subjects")
 
-        logger.info(f"[Step 3] Complete: thresholded at density={density:.2f}, "
-                   f"identified top {frac*100:.1f}% degree nodes")
+        density = self.cfg['network']['density']
+        frac = self.cfg['network']['frac']
+        logger.info(f"[Step 3] Complete: density={density:.2f}, "
+                   f"top {frac*100:.1f}% degree nodes")
 
         return conn_binary, mdsets, top_nodes
+
+    # ------------------------------------------------------------------
+    # Internal steps — override / swap these to change preprocessing
+    # ------------------------------------------------------------------
+
+    def _threshold(self, conn: np.ndarray) -> np.ndarray:
+        """Weighted connectivity → binary adjacency.
+
+        Dispatches on ``cfg['preprocessing']['threshold_method']``:
+
+            * ``"proportional"`` — top *density* % edges (default)
+            * ``"absolute"``     — edges with |w| >= fixed value
+            * ``"mst"``          — MST backbone + proportional fill
+        """
+        pre_cfg = self.cfg.get('preprocessing', {})
+        method = pre_cfg.get('threshold_method', 'proportional')
+
+        dispatch = {
+            'proportional': self._threshold_proportional,
+            'absolute': self._threshold_absolute,
+            'mst': self._threshold_mst,
+        }
+
+        fn = dispatch.get(method)
+        if fn is None:
+            raise ValueError(
+                f"Unknown threshold_method '{method}'. "
+                f"Choose from: {list(dispatch.keys())}"
+            )
+        return fn(conn)
+
+    # --- threshold implementations ---
+
+    def _threshold_proportional(self, conn: np.ndarray) -> np.ndarray:
+        """Keep top *density* fraction of strongest edges."""
+        density = self.cfg['network']['density']
+        return self.network_analyzer.proportional_threshold(conn, density)
+
+    def _threshold_absolute(self, conn: np.ndarray) -> np.ndarray:
+        """Keep edges whose |weight| >= a fixed threshold."""
+        pre_cfg = self.cfg.get('preprocessing', {})
+        thr = pre_cfg.get('absolute_threshold')
+        if thr is None:
+            raise ValueError(
+                "absolute_threshold must be set when threshold_method='absolute'"
+            )
+        n = conn.shape[0]
+        w = (conn + conn.T) / 2.0
+        np.fill_diagonal(w, 0)
+        binary = (np.abs(w) >= thr).astype(np.int32)
+        return np.maximum(binary, binary.T)
+
+    def _threshold_mst(self, conn: np.ndarray) -> np.ndarray:
+        """MST backbone, then fill remaining budget with strongest edges."""
+        from scipy.sparse.csgraph import minimum_spanning_tree
+
+        density = self.cfg['network']['density']
+        n = conn.shape[0]
+
+        w = (conn + conn.T) / 2.0
+        np.fill_diagonal(w, 0)
+        abs_w = np.abs(w)
+
+        # MST (scipy minimises → negate to get max-weight tree)
+        mst = minimum_spanning_tree(-abs_w)
+        mst_bin = (mst.toarray() != 0).astype(np.int32)
+        mst_bin = np.maximum(mst_bin, mst_bin.T)
+
+        # Fill to target density
+        triu_idx = np.triu_indices(n, k=1)
+        n_target = max(1, int(np.round(density * len(triu_idx[0]))))
+        n_mst = mst_bin[triu_idx].sum()
+        n_fill = max(0, n_target - n_mst)
+
+        if n_fill > 0:
+            non_mst_mask = mst_bin[triu_idx] == 0
+            non_mst_weights = abs_w[triu_idx] * non_mst_mask
+            fill_idx = np.argsort(non_mst_weights)[::-1][:n_fill]
+            for idx in fill_idx:
+                r, c = triu_idx[0][idx], triu_idx[1][idx]
+                mst_bin[r, c] = 1
+                mst_bin[c, r] = 1
+
+        return mst_bin
+
+    # --- other preprocessing steps ---
+
+    def _compute_mdset(self, adj: np.ndarray) -> np.ndarray:
+        """Binary adjacency → Minimum Dominating Set."""
+        analyzer = NetworkAnalyzer(adj)
+        return analyzer.find_mdset(use_cache=True)
+
+    def _compute_top_nodes(self, adj: np.ndarray) -> np.ndarray:
+        """Binary adjacency → high-degree node indices (top *frac* %)."""
+        frac = self.cfg['network']['frac']
+        analyzer = NetworkAnalyzer(adj)
+        return analyzer.top_degree_nodes(frac)
 
 
 # ================================================================

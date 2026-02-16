@@ -524,88 +524,41 @@ class QCAnalyzer:
 
 
 # ================================================================
-# Standalone Functions (Backward Compatibility)
+# Convenience Functions (for notebook / interactive use)
+# ================================================================
+#
+# The canonical pipeline uses Stage3Analysis (stage3_analysis.py).
+# These thin wrappers exist only for quick interactive exploration
+# in notebooks or scripts.  They are NOT used by main.py.
 # ================================================================
 
 def lifespan_trend(df: pd.DataFrame, metric_names: List[str],
-                  cfg: dict) -> pd.DataFrame:
-    """
-    Compute age-metric correlations and regression fits (backward compatible).
-
-    Args:
-        df: DataFrame with age and metric columns
-        metric_names: List of metric names
-        cfg: Configuration dict
-
-    Returns:
-        DataFrame with correlation and regression results
-    """
-    analyzer = LifespanAnalyzer(df, metric_names)
-    return analyzer.analyze()
+                   cfg: dict = None) -> pd.DataFrame:
+    """Compute age-metric correlations (convenience wrapper)."""
+    return LifespanAnalyzer(df, metric_names).analyze()
 
 
 def assign_age_bins(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """
-    Assign age bins to each subject (backward compatible).
-
-    Args:
-        df: DataFrame with age data
-        cfg: Configuration dict
-
-    Returns:
-        DataFrame with bin assignments
-    """
-    analyzer = AgeBinAnalyzer(df, cfg)
-    return analyzer.assign_bins()
+    """Assign age bins to subjects (convenience wrapper)."""
+    return AgeBinAnalyzer(df, cfg).assign_bins()
 
 
 def bin_summary_stats(df: pd.DataFrame,
-                     metric_names: List[str]) -> pd.DataFrame:
-    """
-    Compute per-bin summary statistics (backward compatible).
-
-    Args:
-        df: DataFrame with bin assignments
-        metric_names: List of metric names
-
-    Returns:
-        DataFrame with bin statistics
-    """
-    # Extract cfg from df if needed, or use empty dict
-    cfg = {'age': {'bins': None, 'auto_bins': {'count': 5, 'method': 'equal'}}}
-    analyzer = AgeBinAnalyzer(df, cfg)
-    return analyzer.compute_bin_stats(df, metric_names)
+                      metric_names: List[str],
+                      cfg: dict = None) -> pd.DataFrame:
+    """Per-bin summary statistics (convenience wrapper)."""
+    if cfg is None:
+        cfg = {'age': {'bins': None, 'auto_bins': {'count': 5, 'method': 'equal'}}}
+    return AgeBinAnalyzer(df, cfg).compute_bin_stats(df, metric_names)
 
 
 def stat_tests(df: pd.DataFrame, metric_names: List[str],
-              cfg: dict) -> Dict[str, dict]:
-    """
-    Per-metric statistical tests across age bins (backward compatible).
-
-    Args:
-        df: DataFrame with bin assignments and metrics
-        metric_names: List of metric names
-        cfg: Configuration dict
-
-    Returns:
-        Dict[metric_name → test results]
-    """
-    analyzer = StatisticalTestAnalyzer(df, metric_names, cfg)
-    return analyzer.run_tests()
+               cfg: dict) -> Dict[str, dict]:
+    """Per-metric statistical tests across age bins (convenience wrapper)."""
+    return StatisticalTestAnalyzer(df, metric_names, cfg).run_tests()
 
 
 def apply_subject_qc(df: pd.DataFrame, metric_names: List[str],
-                     cfg: dict) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-    """
-    Apply subject-level QC and return filtered dataframe with metadata.
-
-    Args:
-        df: Input DataFrame with metric columns
-        metric_names: Metrics considered for QC
-        cfg: Configuration dict
-
-    Returns:
-        (filtered_df, qc_meta)
-    """
-    analyzer = QCAnalyzer(df, metric_names, cfg)
-    return analyzer.run()
+                      cfg: dict) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Apply subject-level QC (convenience wrapper)."""
+    return QCAnalyzer(df, metric_names, cfg).run()

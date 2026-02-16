@@ -679,54 +679,31 @@ class OverviewStatsPlotter(BasePlotter):
 
 
 # ================================================================
-# Standalone Functions (Backward Compatibility)
+# Convenience Functions (for notebook / interactive use)
+# ================================================================
+#
+# The canonical pipeline uses Stage4Visualization (stage4_visualization.py).
+# These thin wrappers exist only for quick ad-hoc plotting in notebooks.
+# They are NOT used by main.py.
 # ================================================================
 
-def plot_scatter_trend(df: pd.DataFrame, mname: str, trend_row: dict,
-                      cfg: dict, save_dir: str, pstr: str):
-    """Age vs metric scatter + regression line (backward compatible)."""
-    plotter = ScatterTrendPlotter(cfg, save_dir, pstr)
-    plotter.plot(df, mname, trend_row)
+def plot_scatter_trend(df, mname, trend_row, cfg, save_dir, pstr):
+    ScatterTrendPlotter(cfg, save_dir, pstr).plot(df, mname, trend_row)
 
+def plot_boxplot_bins(df, mname, stat_res, cfg, save_dir, pstr):
+    BoxplotBinsPlotter(cfg, save_dir, pstr).plot(df, mname, stat_res)
 
-def plot_boxplot_bins(df: pd.DataFrame, mname: str, stat_res: Optional[dict],
-                      cfg: dict, save_dir: str, pstr: str):
-    """Boxplot of metric across age bins (backward compatible)."""
-    plotter = BoxplotBinsPlotter(cfg, save_dir, pstr)
-    plotter.plot(df, mname, stat_res)
+def plot_metric_comparison(df, m1, m2, cfg, save_dir, pstr):
+    MetricComparisonPlotter(cfg, save_dir, pstr).plot(df, m1, m2)
 
+def plot_heatmap_summary(bin_stats_df, cfg, save_dir, pstr):
+    HeatmapSummaryPlotter(cfg, save_dir, pstr).plot(bin_stats_df)
 
-def plot_metric_comparison(df: pd.DataFrame, m1: str, m2: str,
-                          cfg: dict, save_dir: str, pstr: str):
-    """Two-metric scatter colored by age (backward compatible)."""
-    plotter = MetricComparisonPlotter(cfg, save_dir, pstr)
-    plotter.plot(df, m1, m2)
+def plot_qc_summary(qc_meta, cfg, save_dir, pstr):
+    QCProfilePlotter(cfg, save_dir, pstr).plot(qc_meta)
 
+def plot_summary_trend_bins(df, metric_names, cfg, save_dir, pstr):
+    TrendBinsSummaryPlotter(cfg, save_dir, pstr).plot(df, metric_names)
 
-def plot_heatmap_summary(bin_stats_df: pd.DataFrame,
-                        cfg: dict, save_dir: str, pstr: str):
-    """Heatmap: rows=metrics, cols=bins (backward compatible)."""
-    plotter = HeatmapSummaryPlotter(cfg, save_dir, pstr)
-    plotter.plot(bin_stats_df)
-
-
-def plot_qc_summary(qc_meta: Optional[dict],
-                    cfg: dict, save_dir: str, pstr: str):
-    """QC summary plot (consensus-style)."""
-    plotter = QCProfilePlotter(cfg, save_dir, pstr)
-    plotter.plot(qc_meta)
-
-
-def plot_summary_trend_bins(df: pd.DataFrame, metric_names: List[str],
-                            cfg: dict, save_dir: str, pstr: str):
-    """Summary figure: all-metric trend + per-bin split."""
-    plotter = TrendBinsSummaryPlotter(cfg, save_dir, pstr)
-    plotter.plot(df, metric_names)
-
-
-def plot_overview_stats(metric_names: List[str], trend_df: pd.DataFrame,
-                        stat_results: Dict[str, dict], qc_meta: Optional[dict],
-                        cfg: dict, save_dir: str, pstr: str):
-    """Single-page overview with all statistical tests."""
-    plotter = OverviewStatsPlotter(cfg, save_dir, pstr)
-    plotter.plot(metric_names, trend_df, stat_results, qc_meta=qc_meta)
+def plot_overview_stats(metric_names, trend_df, stat_results, qc_meta, cfg, save_dir, pstr):
+    OverviewStatsPlotter(cfg, save_dir, pstr).plot(metric_names, trend_df, stat_results, qc_meta=qc_meta)

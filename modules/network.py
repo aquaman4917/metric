@@ -143,18 +143,19 @@ class NetworkAnalyzer:
     # ================================================================
 
     def find_mdset(self, adj: Optional[np.ndarray] = None,
-                  use_cache: bool = True) -> np.ndarray:
+                  use_cache: bool = True,
+                  method: str = 'greedy') -> np.ndarray:
         """
-        Find Minimum Dominating Set using binary integer programming.
-
-        Formulation (Lee et al. 2019):
-            min  Σ x_v
-            s.t. x_v + Σ_{w ∈ Γ(v)} x_w >= 1  ∀v
-                 x_v ∈ {0, 1}
+        Find Minimum Dominating Set.
 
         Args:
             adj: Optional adjacency matrix (uses self.adj if None)
             use_cache: If True, cache result for repeated calls
+            method:
+                ``'greedy'`` — fast greedy heuristic, O(N²).  Near-optimal
+                    for typical brain networks.  Default.
+                ``'ilp'`` — exact ILP via PuLP/CBC.  Guarantees optimal
+                    solution but **very slow** for N > ~100.
 
         Returns:
             1D array of MDSet node indices (0-indexed)
@@ -164,42 +165,78 @@ class NetworkAnalyzer:
         if adj is None:
             raise ValueError("No adjacency matrix provided")
 
-        # Return cached result if available
         if use_cache and self._mdset_cache is not None:
             return self._mdset_cache
 
+        if method == 'greedy':
+            mdset = self._mdset_greedy(adj)
+        elif method == 'ilp':
+            mdset = self._mdset_ilp(adj)
+        else:
+            raise ValueError(f"Unknown mdset method '{method}'. Use 'greedy' or 'ilp'.")
+
+        if use_cache:
+            self._mdset_cache = mdset
+        return mdset
+
+    # --- MDSet implementations ---
+
+    @staticmethod
+    def _mdset_greedy(adj: np.ndarray) -> np.ndarray:
+        """
+        Greedy MDS heuristic.
+
+        At each step pick the node whose closed neighbourhood covers
+        the most still-undominated nodes.  Runs in O(N²) worst-case
+        and typically finds a set within 1+ln(Δ) of optimal.
+        """
+        n = adj.shape[0]
+        # pre-compute closed neighbourhoods
+        nbrs = [set(np.where(adj[i] > 0)[0]) | {i} for i in range(n)]
+
+        dominated = set()
+        selected = []
+
+        while len(dominated) < n:
+            best, best_gain = -1, -1
+            for v in range(n):
+                gain = len(nbrs[v] - dominated)
+                if gain > best_gain:
+                    best, best_gain = v, gain
+            selected.append(best)
+            dominated |= nbrs[best]
+
+        return np.array(sorted(selected), dtype=np.int32)
+
+    @staticmethod
+    def _mdset_ilp(adj: np.ndarray) -> np.ndarray:
+        """
+        Exact MDS via binary integer programming (PuLP/CBC).
+
+        Formulation (Lee et al. 2019):
+            min  Σ x_v
+            s.t. x_v + Σ_{w ∈ Γ(v)} x_w >= 1  ∀v
+                 x_v ∈ {0, 1}
+
+        WARNING: Very slow for N > ~100.  Use for validation only.
+        """
         import pulp
 
         n = adj.shape[0]
-
-        # Create problem
         prob = pulp.LpProblem("MDSet", pulp.LpMinimize)
-
-        # Binary variables
         x = [pulp.LpVariable(f"x_{i}", cat='Binary') for i in range(n)]
-
-        # Objective: minimize total selected nodes
         prob += pulp.lpSum(x)
 
-        # Constraints: each node must be dominated
         for v in range(n):
             neighbors = np.where(adj[v] > 0)[0]
             prob += x[v] + pulp.lpSum(x[w] for w in neighbors) >= 1
 
-        # Solve (suppress output)
         prob.solve(pulp.PULP_CBC_CMD(msg=0))
-
         if prob.status != 1:
             logger.warning(f"MDSet solver status: {pulp.LpStatus[prob.status]}")
 
-        mdset = np.array([i for i in range(n) if x[i].varValue > 0.5],
+        return np.array([i for i in range(n) if x[i].varValue > 0.5],
                         dtype=np.int32)
-
-        # Cache if requested
-        if use_cache:
-            self._mdset_cache = mdset
-
-        return mdset
 
     # ================================================================
     # 4. Control Area
