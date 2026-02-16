@@ -10,12 +10,13 @@ Pipeline:
 
 import logging
 import os
+import json
 import numpy as np
 import pandas as pd
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from .analysis import LifespanAnalyzer, AgeBinAnalyzer, StatisticalTestAnalyzer
+from .analysis import LifespanAnalyzer, AgeBinAnalyzer, StatisticalTestAnalyzer, QCAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +35,13 @@ class AnalysisResults:
         trend_df: Lifespan trend analysis results
         bin_stats_df: Per-bin summary statistics
         stat_results: Statistical test results
+        qc_meta: Subject-level QC metadata
     """
     df: pd.DataFrame
     trend_df: pd.DataFrame
     bin_stats_df: pd.DataFrame
     stat_results: Dict[str, dict]
+    qc_meta: Optional[Dict[str, object]] = None
 
     def __repr__(self) -> str:
         n_metrics = len(self.trend_df)
@@ -98,16 +101,19 @@ class Stage3Analysis:
         logger.info("  Stage 3: Statistical Analysis")
         logger.info("="*60)
 
-        # Step 1: Lifespan trend analysis
-        trend_df = self._lifespan_trend_analysis()
+        # Step 1: QC
+        df_qc, qc_meta = self._run_qc()
 
-        # Step 2: Age binning
-        df_with_bins = self._age_binning()
+        # Step 2: Lifespan trend analysis
+        trend_df = self._lifespan_trend_analysis(df_qc)
 
-        # Step 3: Bin-level statistics
+        # Step 3: Age binning
+        df_with_bins = self._age_binning(df_qc)
+
+        # Step 4: Bin-level statistics
         bin_stats_df = self._bin_statistics(df_with_bins)
 
-        # Step 4: Statistical tests
+        # Step 5: Statistical tests
         stat_results = self._statistical_tests(df_with_bins)
 
         # Create container
@@ -116,41 +122,57 @@ class Stage3Analysis:
             trend_df=trend_df,
             bin_stats_df=bin_stats_df,
             stat_results=stat_results,
+            qc_meta=qc_meta,
         )
 
         logger.info(f"[Stage3] Complete: {results}")
         return results
 
-    def _lifespan_trend_analysis(self) -> pd.DataFrame:
+    def _run_qc(self) -> Tuple[pd.DataFrame, Dict[str, object]]:
+        """
+        Run subject-level QC on metrics.
+
+        Returns:
+            (filtered_df, qc_meta)
+        """
+        logger.info("[Step 1] Subject QC")
+        analyzer = QCAnalyzer(self.df, self.metric_names, self.cfg)
+        df_qc, qc_meta = analyzer.run()
+        if df_qc.empty:
+            raise ValueError("No subjects left after QC. Relax qc settings in config.")
+        logger.info(f"[Step 1] Retained {len(df_qc)}/{len(self.df)} subjects after QC")
+        return df_qc, qc_meta
+
+    def _lifespan_trend_analysis(self, df_input: pd.DataFrame) -> pd.DataFrame:
         """
         Perform lifespan trend analysis.
 
         Returns:
             DataFrame with trend results
         """
-        logger.info("[Step 1] Lifespan Trend Analysis")
+        logger.info("[Step 2] Lifespan Trend Analysis")
 
-        analyzer = LifespanAnalyzer(self.df, self.metric_names)
+        analyzer = LifespanAnalyzer(df_input, self.metric_names)
         trend_df = analyzer.analyze()
 
-        logger.info(f"[Step 1] Analyzed {len(trend_df)} metrics")
+        logger.info(f"[Step 2] Analyzed {len(trend_df)} metrics")
 
         return trend_df
 
-    def _age_binning(self) -> pd.DataFrame:
+    def _age_binning(self, df_input: pd.DataFrame) -> pd.DataFrame:
         """
         Assign age bins to subjects.
 
         Returns:
             DataFrame with bin assignments
         """
-        logger.info("[Step 2] Age Binning")
+        logger.info("[Step 3] Age Binning")
 
-        analyzer = AgeBinAnalyzer(self.df, self.cfg)
+        analyzer = AgeBinAnalyzer(df_input, self.cfg)
         df_with_bins = analyzer.assign_bins()
 
         n_bins = df_with_bins['age_bin'].nunique() - 1  # Exclude 0
-        logger.info(f"[Step 2] Assigned {n_bins} age bins")
+        logger.info(f"[Step 3] Assigned {n_bins} age bins")
 
         return df_with_bins
 
@@ -164,12 +186,12 @@ class Stage3Analysis:
         Returns:
             DataFrame with bin statistics
         """
-        logger.info("[Step 3] Bin-Level Statistics")
+        logger.info("[Step 4] Bin-Level Statistics")
 
         analyzer = AgeBinAnalyzer(df, self.cfg)
         bin_stats_df = analyzer.compute_bin_stats(df, self.metric_names)
 
-        logger.info(f"[Step 3] Computed stats for {len(bin_stats_df)} bin-metric combinations")
+        logger.info(f"[Step 4] Computed stats for {len(bin_stats_df)} bin-metric combinations")
 
         return bin_stats_df
 
@@ -183,13 +205,13 @@ class Stage3Analysis:
         Returns:
             Dict of test results per metric
         """
-        logger.info("[Step 4] Statistical Tests")
+        logger.info("[Step 5] Statistical Tests")
 
         analyzer = StatisticalTestAnalyzer(df, self.metric_names, self.cfg)
         stat_results = analyzer.run_tests()
 
         n_tested = len(stat_results)
-        logger.info(f"[Step 4] Tested {n_tested} metrics")
+        logger.info(f"[Step 5] Tested {n_tested} metrics")
 
         return stat_results
 
@@ -208,6 +230,13 @@ class Stage3Analysis:
         trend_path = os.path.join(out_dir, f"trend_{param_str}.csv")
         results.trend_df.to_csv(trend_path, index=False)
         logger.info(f"  Saved: {trend_path}")
+
+        # Save QC metadata
+        if results.qc_meta is not None:
+            qc_path = os.path.join(out_dir, f"qc_{param_str}.json")
+            with open(qc_path, 'w', encoding='utf-8') as f:
+                json.dump(results.qc_meta, f, indent=2)
+            logger.info(f"  Saved: {qc_path}")
 
         # Save bin statistics
         bin_stats_path = os.path.join(out_dir, f"bin_stats_{param_str}.csv")

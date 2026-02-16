@@ -38,15 +38,14 @@ subregion:
 
 # --- Age ---
 age:
-  unit: "month"               # 'month' or 'year' in input data
-  bins:                        # manual bins (months). null = auto
-    - [0, 60,   "0-5y"]
-    - [60, 120,  "5-10y"]
-    - [120, 180, "10-15y"]
-    - [180, 240, "15-20y"]
-    - [240, 360, "20-30y"]
-    - [360, 600, "30-50y"]
-    - [600, 1200, "50-100y"]
+  unit: "year"                # MAT age is in years
+  bins:                        # manual bins (years). null = auto
+    - [0, 21,   "dev"]
+    - [22, 35,  "ya"]
+    - [36, 44, "mature"]
+    - [45, 59, "peri"]
+    - [59, 79, "old"]
+    - [80, 200, "very-old"]
   auto_bins:
     count: 5
     method: "quantile"        # 'quantile' or 'equal'
@@ -56,6 +55,13 @@ stats:
   alpha: 0.05
   correction: "bonferroni"    # 'none', 'bonferroni', 'fdr'
   trend_model: "linear"       # 'linear', 'quadratic'
+
+# --- Subject QC (consensus-style) ---
+qc:
+  method: "zscore"            # 'zscore', 'iqr', 'none'
+  zscore_threshold: 3.0
+  iqr_factor: 1.5
+  min_metrics: 3              # minimum valid metric count per subject
 
 # --- Visualization ---
 viz:

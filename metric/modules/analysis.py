@@ -8,7 +8,7 @@ import logging
 import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +297,10 @@ class StatisticalTestAnalyzer:
 
             # Kruskal-Wallis test
             kw_stat, kw_p = sp_stats.kruskal(*groups)
+            try:
+                anova_f, anova_p = sp_stats.f_oneway(*groups)
+            except Exception:
+                anova_f, anova_p = np.nan, np.nan
 
             # Pairwise tests
             pairwise = self._pairwise_tests(vals, bins, unique_bins, valid)
@@ -315,12 +319,16 @@ class StatisticalTestAnalyzer:
             results[mname] = {
                 'kw_stat': kw_stat,
                 'kw_p': kw_p,
+                'anova_f': anova_f,
+                'anova_p': anova_p,
                 'pairwise': pairwise,
                 'n_sig': n_sig,
             }
 
-            logger.info(f"[stat] {mname}: KW p={kw_p:.2e}, "
-                       f"{n_sig}/{len(pairwise)} pairwise sig ({correction})")
+            logger.info(
+                f"[stat] {mname}: KW p={kw_p:.2e}, ANOVA p={anova_p:.2e}, "
+                f"{n_sig}/{len(pairwise)} pairwise sig ({correction})"
+            )
 
         return results
 
@@ -412,6 +420,110 @@ class StatisticalTestAnalyzer:
 
 
 # ================================================================
+# QC Analyzer
+# ================================================================
+
+class QCAnalyzer:
+    """
+    Subject-level QC using metric profiles.
+
+    Methods:
+      - zscore: outlier on per-subject metric mean z-score
+      - iqr: outlier on per-subject metric mean/std using IQR fence
+      - none: keep all subjects
+    """
+
+    def __init__(self, df: pd.DataFrame, metric_names: List[str], cfg: dict):
+        self.df = df
+        self.metric_names = metric_names
+        self.cfg = cfg
+
+    def run(self) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Run QC and return filtered DataFrame + QC metadata."""
+        qc_cfg = self.cfg.get('qc', {})
+        method = str(qc_cfg.get('method', 'none')).lower()
+        z_thr = float(qc_cfg.get('zscore_threshold', 3.0))
+        iqr_factor = float(qc_cfg.get('iqr_factor', 1.5))
+        min_metrics = int(qc_cfg.get('min_metrics', 3))
+
+        used_metrics = [m for m in self.metric_names if m in self.df.columns]
+        if not used_metrics:
+            meta = {
+                'method': 'none',
+                'reason': 'no_metric_columns',
+                'n_subjects': int(len(self.df)),
+                'n_outliers': 0,
+                'outlier_indices': [],
+                'inlier_mask': [True] * len(self.df),
+                'metrics_used': [],
+            }
+            return self.df.copy(), meta
+
+        x = self.df[used_metrics].replace([np.inf, -np.inf], np.nan).values
+        valid_counts = np.isfinite(x).sum(axis=1)
+        subject_mean = np.nanmean(x, axis=1)
+        subject_std = np.nanstd(x, axis=1)
+        enough_metric_mask = valid_counts >= max(1, min_metrics)
+
+        inlier_mask = enough_metric_mask.copy()
+        outlier_score = np.full(len(self.df), np.nan, dtype=float)
+
+        if method == 'zscore':
+            mu = np.nanmean(subject_mean[enough_metric_mask]) if enough_metric_mask.any() else 0.0
+            sigma = np.nanstd(subject_mean[enough_metric_mask]) if enough_metric_mask.any() else 0.0
+            if sigma <= 0 or not np.isfinite(sigma):
+                z = np.zeros(len(subject_mean), dtype=float)
+            else:
+                z = np.abs((subject_mean - mu) / (sigma + 1e-10))
+            outlier_score = z
+            inlier_mask = (z < z_thr) & enough_metric_mask
+        elif method == 'iqr':
+            def _iqr_mask(vals: np.ndarray, factor: float) -> np.ndarray:
+                v = vals[np.isfinite(vals)]
+                if len(v) < 4:
+                    return np.ones(len(vals), dtype=bool)
+                q1, q3 = np.percentile(v, [25, 75])
+                iqr = q3 - q1
+                lo = q1 - factor * iqr
+                hi = q3 + factor * iqr
+                return (vals >= lo) & (vals <= hi)
+
+            mean_mask = _iqr_mask(subject_mean, iqr_factor)
+            std_mask = _iqr_mask(subject_std, iqr_factor)
+            inlier_mask = mean_mask & std_mask & enough_metric_mask
+        elif method == 'none':
+            inlier_mask = enough_metric_mask
+        else:
+            raise ValueError(f"Unknown qc method '{method}'. Use: zscore, iqr, none")
+
+        n_out = int((~inlier_mask).sum())
+        meta = {
+            'method': method,
+            'zscore_threshold': z_thr if method == 'zscore' else None,
+            'iqr_factor': iqr_factor if method == 'iqr' else None,
+            'min_metrics': min_metrics,
+            'n_subjects': int(len(self.df)),
+            'n_outliers': n_out,
+            'outlier_indices': np.where(~inlier_mask)[0].tolist(),
+            'inlier_mask': inlier_mask.tolist(),
+            'subject_metric_mean': subject_mean.tolist(),
+            'subject_metric_std': subject_std.tolist(),
+            'subject_valid_metric_count': valid_counts.tolist(),
+            'subject_outlier_score': outlier_score.tolist(),
+            'metrics_used': used_metrics,
+        }
+
+        logger.info(
+            f"[qc] method={method}, outliers={n_out}/{len(self.df)} "
+            f"({(n_out / max(len(self.df), 1)):.1%})"
+        )
+
+        df_qc = self.df.loc[inlier_mask].copy()
+        df_qc.reset_index(drop=True, inplace=True)
+        return df_qc, meta
+
+
+# ================================================================
 # Standalone Functions (Backward Compatibility)
 # ================================================================
 
@@ -480,3 +592,20 @@ def stat_tests(df: pd.DataFrame, metric_names: List[str],
     """
     analyzer = StatisticalTestAnalyzer(df, metric_names, cfg)
     return analyzer.run_tests()
+
+
+def apply_subject_qc(df: pd.DataFrame, metric_names: List[str],
+                     cfg: dict) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """
+    Apply subject-level QC and return filtered dataframe with metadata.
+
+    Args:
+        df: Input DataFrame with metric columns
+        metric_names: Metrics considered for QC
+        cfg: Configuration dict
+
+    Returns:
+        (filtered_df, qc_meta)
+    """
+    analyzer = QCAnalyzer(df, metric_names, cfg)
+    return analyzer.run()

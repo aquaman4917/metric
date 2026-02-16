@@ -21,8 +21,10 @@ Usage:
 import os
 import sys
 import time
+import json
 import argparse
 import logging
+from datetime import datetime
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
@@ -57,12 +59,17 @@ def run_pipeline(cfg: dict) -> dict:
         dict with keys: df, trend, bin_stats, stat_results, cfg
     """
     pstr = param_string(cfg)
-    out_dir = ensure_dir(os.path.join(cfg['paths']['output_dir'], pstr))
-    fig_dir = ensure_dir(os.path.join(out_dir, 'figures'))
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_name = f"run_{pstr}_{timestamp}"
+    out_dir = ensure_dir(os.path.join(cfg['paths']['output_dir'], run_name))
+    summary_dir = ensure_dir(os.path.join(out_dir, 'summary'))
+    fig_dir = ensure_dir(os.path.join(summary_dir, 'figures'))
+    fig_summary_dir = fig_dir
+    fig_detail_dir = ensure_dir(os.path.join(fig_dir, 'detail'))
 
     logger.info("=" * 60)
     logger.info("METRIC PIPELINE")
-    logger.info("  Run:    %s", pstr)
+    logger.info("  Run:    %s", run_name)
     logger.info("  Input:  %s", cfg['paths']['input_mat'])
     logger.info("  Output: %s", out_dir)
     logger.info("=" * 60)
@@ -110,14 +117,29 @@ def run_pipeline(cfg: dict) -> dict:
         df.insert(0, 'age_years', age)
         df.insert(1, 'age_months', age * 12.0)
 
-    # Save CSV
+    active_metrics = _active_metrics(cfg)
+    # Save raw CSV before QC
+    raw_csv_path = os.path.join(out_dir, f"results_raw_{pstr}.csv")
+    df.to_csv(raw_csv_path, index=False)
+    logger.info(f"[output] Raw CSV: {raw_csv_path}")
+
+    # Subject-level QC (consensus-style)
+    df, qc_meta = analysis.apply_subject_qc(df, active_metrics, cfg)
+    if df.empty:
+        raise ValueError("No subjects left after QC. Relax qc settings in config.")
+
+    qc_json_path = os.path.join(out_dir, f"qc_{pstr}.json")
+    with open(qc_json_path, 'w', encoding='utf-8') as f:
+        json.dump(qc_meta, f, indent=2)
+    logger.info(f"[output] QC JSON: {qc_json_path}")
+
+    # Save cleaned CSV
     csv_path = os.path.join(out_dir, f"results_{pstr}.csv")
     df.to_csv(csv_path, index=False)
-    logger.info(f"[output] CSV: {csv_path}")
+    logger.info(f"[output] Clean CSV: {csv_path}")
 
     # --- Summary ---
-    active_metrics = _active_metrics(cfg)
-    _print_summary(df, active_metrics, n_subj)
+    _print_summary(df, active_metrics, len(df))
 
     # --- 4. Lifespan trend ---
     logger.info("--- Lifespan Trend ---")
@@ -127,11 +149,14 @@ def run_pipeline(cfg: dict) -> dict:
     trend_df.to_csv(trend_csv, index=False)
 
     for _, row in trend_df.iterrows():
-        plotting.plot_scatter_trend(df, row['metric'], row.to_dict(), cfg, fig_dir, pstr)
+        plotting.plot_scatter_trend(df, row['metric'], row.to_dict(), cfg, fig_detail_dir, pstr)
 
     # --- 5. Age bin ---
     logger.info("--- Age Bin Analysis ---")
     df = analysis.assign_age_bins(df, cfg)
+
+    # Summary plot requested: all metrics trend + split by bins
+    plotting.plot_summary_trend_bins(df, active_metrics, cfg, fig_summary_dir, pstr)
 
     bin_stats_df = analysis.bin_summary_stats(df, active_metrics)
     bin_stats_csv = os.path.join(out_dir, f"bin_stats_{pstr}.csv")
@@ -148,13 +173,17 @@ def run_pipeline(cfg: dict) -> dict:
         stat_csv = os.path.join(out_dir, f"pairwise_stats_{pstr}.csv")
         pd.DataFrame(stat_rows).to_csv(stat_csv, index=False)
 
+    # Overview + QC (summary first)
+    plotting.plot_qc_summary(qc_meta, cfg, fig_summary_dir, pstr)
+    plotting.plot_overview_stats(active_metrics, trend_df, stat_results, qc_meta, cfg, fig_summary_dir, pstr)
+
     # Bin figures
     for mname in active_metrics:
         sr = stat_results.get(mname)
-        plotting.plot_boxplot_bins(df, mname, sr, cfg, fig_dir, pstr)
+        plotting.plot_boxplot_bins(df, mname, sr, cfg, fig_detail_dir, pstr)
 
     # Heatmap
-    plotting.plot_heatmap_summary(bin_stats_df, cfg, fig_dir, pstr)
+    plotting.plot_heatmap_summary(bin_stats_df, cfg, fig_summary_dir, pstr)
 
     # --- 6. Metric comparison plots ---
     comparison_pairs = [
@@ -163,17 +192,20 @@ def run_pipeline(cfg: dict) -> dict:
     ]
     for m1, m2 in comparison_pairs:
         if m1 in active_metrics and m2 in active_metrics:
-            plotting.plot_metric_comparison(df, m1, m2, cfg, fig_dir, pstr)
+            plotting.plot_metric_comparison(df, m1, m2, cfg, fig_detail_dir, pstr)
 
     # --- Done ---
     logger.info(f"[output] Results: {out_dir}")
-    logger.info(f"[output] Figures: {fig_dir}")
+    logger.info(f"[output] Summary: {summary_dir}")
+    logger.info(f"[output] Figures(summary): {fig_summary_dir}")
+    logger.info(f"[output] Figures(detail): {fig_detail_dir}")
 
     return {
         'df': df,
         'trend': trend_df,
         'bin_stats': bin_stats_df,
         'stat_results': stat_results,
+        'qc_meta': qc_meta,
         'cfg': cfg,
     }
 

@@ -19,6 +19,9 @@ from .plotting import (
     BoxplotBinsPlotter,
     MetricComparisonPlotter,
     HeatmapSummaryPlotter,
+    TrendBinsSummaryPlotter,
+    QCProfilePlotter,
+    OverviewStatsPlotter,
 )
 from .utils import ensure_dir
 
@@ -52,6 +55,8 @@ class Stage4Visualization:
         self.fig_dir = fig_dir
         self.param_str = param_str
         ensure_dir(fig_dir)
+        self.fig_summary_dir = fig_dir
+        self.fig_detail_dir = ensure_dir(os.path.join(fig_dir, 'detail'))
 
     @classmethod
     def run(cls, cfg: dict, analysis_results: AnalysisResults,
@@ -77,6 +82,9 @@ class Stage4Visualization:
             List of plot type names
         """
         return [
+            'summary_trend_bins',
+            'qc_summary',
+            'overview_stats',
             'scatter_trend',
             'boxplot_bins',
             'metric_comparison',
@@ -89,25 +97,51 @@ class Stage4Visualization:
         logger.info("  Stage 4: Visualization")
         logger.info("="*60)
 
-        # Step 1: Scatter trend plots
+        # Step 1: QC + statistical overview
+        self._plot_qc_summary()
+        self._plot_overview()
+        self._plot_summary_trend_bins()
+
+        # Step 2: Scatter trend plots
         self._plot_scatter_trends()
 
-        # Step 2: Boxplots by age bins
+        # Step 3: Boxplots by age bins
         self._plot_boxplots()
 
-        # Step 3: Metric comparisons
+        # Step 4: Metric comparisons
         self._plot_metric_comparisons()
 
-        # Step 4: Summary heatmap
+        # Step 5: Summary heatmap
         self._plot_heatmap()
 
         logger.info(f"[Stage4] Complete: Figures saved to {self.fig_dir}")
 
+    def _plot_qc_summary(self):
+        """Generate QC summary plot."""
+        logger.info("[Step 1] QC Summary")
+        plotter = QCProfilePlotter(self.cfg, self.fig_summary_dir, self.param_str)
+        plotter.plot(getattr(self.results, 'qc_meta', None))
+
+    def _plot_overview(self):
+        """Generate single-page statistical overview."""
+        logger.info("[Step 1] Statistical Overview")
+        plotter = OverviewStatsPlotter(self.cfg, self.fig_summary_dir, self.param_str)
+        metric_names = self.results.trend_df['metric'].tolist()
+        for mname in self.results.stat_results.keys():
+            if mname not in metric_names:
+                metric_names.append(mname)
+        plotter.plot(
+            metric_names=metric_names,
+            trend_df=self.results.trend_df,
+            stat_results=self.results.stat_results,
+            qc_meta=getattr(self.results, 'qc_meta', None),
+        )
+
     def _plot_scatter_trends(self):
         """Generate scatter trend plots for all metrics."""
-        logger.info("[Step 1] Scatter Trend Plots")
+        logger.info("[Step 2] Scatter Trend Plots")
 
-        plotter = ScatterTrendPlotter(self.cfg, self.fig_dir, self.param_str)
+        plotter = ScatterTrendPlotter(self.cfg, self.fig_detail_dir, self.param_str)
         n_plots = 0
 
         for _, row in self.results.trend_df.iterrows():
@@ -115,13 +149,23 @@ class Stage4Visualization:
             plotter.plot(self.results.df, mname, row.to_dict())
             n_plots += 1
 
-        logger.info(f"[Step 1] Generated {n_plots} scatter plots")
+        logger.info(f"[Step 2] Generated {n_plots} scatter plots")
+
+    def _plot_summary_trend_bins(self):
+        """Generate summary trend+bins figure."""
+        logger.info("[Step 1] Summary Trend + Bins")
+        metric_names = self.results.trend_df['metric'].tolist()
+        for mname in self.results.stat_results.keys():
+            if mname not in metric_names:
+                metric_names.append(mname)
+        plotter = TrendBinsSummaryPlotter(self.cfg, self.fig_summary_dir, self.param_str)
+        plotter.plot(self.results.df, metric_names)
 
     def _plot_boxplots(self):
         """Generate boxplots by age bins for all metrics."""
-        logger.info("[Step 2] Boxplot by Age Bins")
+        logger.info("[Step 3] Boxplot by Age Bins")
 
-        plotter = BoxplotBinsPlotter(self.cfg, self.fig_dir, self.param_str)
+        plotter = BoxplotBinsPlotter(self.cfg, self.fig_detail_dir, self.param_str)
         metric_names = self.results.trend_df['metric'].tolist()
         n_plots = 0
 
@@ -130,13 +174,13 @@ class Stage4Visualization:
             plotter.plot(self.results.df, mname, stat_res)
             n_plots += 1
 
-        logger.info(f"[Step 2] Generated {n_plots} boxplots")
+        logger.info(f"[Step 3] Generated {n_plots} boxplots")
 
     def _plot_metric_comparisons(self):
         """Generate metric vs metric comparison plots."""
-        logger.info("[Step 3] Metric Comparison Plots")
+        logger.info("[Step 4] Metric Comparison Plots")
 
-        plotter = MetricComparisonPlotter(self.cfg, self.fig_dir, self.param_str)
+        plotter = MetricComparisonPlotter(self.cfg, self.fig_detail_dir, self.param_str)
         metric_names = self.results.trend_df['metric'].tolist()
 
         # Define comparison pairs
@@ -153,16 +197,16 @@ class Stage4Visualization:
                 plotter.plot(self.results.df, m1, m2)
                 n_plots += 1
 
-        logger.info(f"[Step 3] Generated {n_plots} comparison plots")
+        logger.info(f"[Step 4] Generated {n_plots} comparison plots")
 
     def _plot_heatmap(self):
         """Generate summary heatmap."""
-        logger.info("[Step 4] Summary Heatmap")
+        logger.info("[Step 5] Summary Heatmap")
 
-        plotter = HeatmapSummaryPlotter(self.cfg, self.fig_dir, self.param_str)
+        plotter = HeatmapSummaryPlotter(self.cfg, self.fig_summary_dir, self.param_str)
         plotter.plot(self.results.bin_stats_df)
 
-        logger.info(f"[Step 4] Generated heatmap")
+        logger.info(f"[Step 5] Generated heatmap")
 
 
 # ================================================================
