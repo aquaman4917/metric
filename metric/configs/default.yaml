@@ -1,0 +1,71 @@
+# ============================================================
+# Brain Control Architecture Pipeline - Configuration
+# ============================================================
+
+# --- Paths ---
+paths:
+  input_mat: "HCP_NKI_merged"
+  input_search_dirs:
+    - "data/brainnetome"
+  output_dir: "results"
+  subregion_file: "data/brainnetome/BNA_subregions.xlsx"
+
+# --- Network Parameters ---
+network:
+  net_size: 246               # Brainnetome atlas node count
+  density: 0.20               # proportional threshold (top 20% edges)
+  frac: 0.05                  # DC: top 5% high-degree nodes
+  pc_threshold: 0.50          # Provincial <= 0.5, Connector > 0.5
+  frac_search_range: [0.01, 0.50, 0.01]  # start, stop, step for newDC
+
+# --- Metrics (on/off) ---
+metrics:
+  MDS_size: true
+  Deg_conc: true
+  DC: true
+  OCA: true
+  newDC: true
+  DC_PC: true
+  OCA_P: true
+  OCA_C: true
+  Prov_ratio: true
+
+# --- Subregion ---
+# null = whole brain. Or specify label from BNA_subregions.xlsx
+subregion:
+  nodes: null                 # e.g., [0, 1, 2, ..., 51] (0-indexed)
+  label: "whole"
+
+# --- Age ---
+age:
+  unit: "month"               # 'month' or 'year' in input data
+  bins:                        # manual bins (months). null = auto
+    - [0, 60,   "0-5y"]
+    - [60, 120,  "5-10y"]
+    - [120, 180, "10-15y"]
+    - [180, 240, "15-20y"]
+    - [240, 360, "20-30y"]
+    - [360, 600, "30-50y"]
+    - [600, 1200, "50-100y"]
+  auto_bins:
+    count: 5
+    method: "quantile"        # 'quantile' or 'equal'
+
+# --- Statistics ---
+stats:
+  alpha: 0.05
+  correction: "bonferroni"    # 'none', 'bonferroni', 'fdr'
+  trend_model: "linear"       # 'linear', 'quadratic'
+
+# --- Visualization ---
+viz:
+  save_fig: true
+  save_png: true
+  dpi: 300
+  scatter_alpha: 0.5
+  colormap: "viridis"
+
+# --- Computation ---
+compute:
+  parallel: true
+  n_jobs: -1                  # -1 = all cores
