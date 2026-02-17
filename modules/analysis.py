@@ -21,27 +21,35 @@ class LifespanAnalyzer:
     """
     Analyzes age-metric correlations and lifespan trends.
 
-    Computes Pearson/Spearman correlations and linear regression fits.
+    Supports linear, quadratic, and cubic trend models.
+    Always reports Pearson/Spearman correlations.
+    When trend_model != 'linear', also fits polynomial and reports
+    R², AIC, and F-test comparing linear vs non-linear.
     """
 
-    def __init__(self, df: pd.DataFrame, metric_names: List[str]):
+    def __init__(self, df: pd.DataFrame, metric_names: List[str],
+                 cfg: Optional[dict] = None):
         """
         Initialize analyzer.
 
         Args:
             df: DataFrame with age and metric columns
             metric_names: List of metric names to analyze
+            cfg: Optional config dict (reads stats.trend_model)
         """
         self.df = df
         self.metric_names = metric_names
+        self.cfg = cfg or {}
+        self.trend_model = self.cfg.get('stats', {}).get('trend_model', 'linear')
 
     def analyze(self) -> pd.DataFrame:
         """
         Compute age-metric correlations and regression fits.
 
         Returns:
-            DataFrame with columns:
-                metric, r, p_pearson, rho, p_spearman, slope, intercept, n
+            DataFrame with columns including:
+                metric, r, p_pearson, rho, p_spearman, slope, intercept, n,
+                linear_r2, quad_r2, quad_a/b/c, quad_f, quad_p, best_model
         """
         age = self.df['age_years'].values
         rows = []
@@ -58,17 +66,20 @@ class LifespanAnalyzer:
                 continue
 
             x, y = age[valid], vals[valid]
+            n = len(x)
 
-            # Pearson correlation
+            # Pearson / Spearman correlations (always computed)
             r, p_pear = sp_stats.pearsonr(x, y)
-
-            # Spearman correlation
             rho, p_spear = sp_stats.spearmanr(x, y)
 
             # Linear regression
             slope, intercept = np.polyfit(x, y, 1)
+            y_pred_lin = slope * x + intercept
+            ss_res_lin = np.sum((y - y_pred_lin) ** 2)
+            ss_tot = np.sum((y - y.mean()) ** 2)
+            linear_r2 = 1.0 - ss_res_lin / ss_tot if ss_tot > 0 else 0.0
 
-            rows.append({
+            row = {
                 'metric': mname,
                 'r': r,
                 'p_pearson': p_pear,
@@ -76,13 +87,92 @@ class LifespanAnalyzer:
                 'p_spearman': p_spear,
                 'slope': slope,
                 'intercept': intercept,
-                'n': int(valid.sum()),
-            })
+                'n': n,
+                'linear_r2': linear_r2,
+            }
 
-            logger.info(f"[trend] {mname}: r={r:.3f} (p={p_pear:.2e}), "
-                       f"rho={rho:.3f} (p={p_spear:.2e})")
+            # Quadratic fit (when trend_model is 'quadratic' or 'cubic')
+            if self.trend_model in ('quadratic', 'cubic') and n >= 15:
+                row.update(self._fit_quadratic(x, y, ss_res_lin, ss_tot, n))
+
+            # Cubic fit (when trend_model is 'cubic')
+            if self.trend_model == 'cubic' and n >= 20:
+                row.update(self._fit_cubic(x, y, ss_res_lin, ss_tot, n))
+
+            # Determine best model
+            row['best_model'] = self._select_best_model(row)
+
+            rows.append(row)
+
+            best = row['best_model']
+            best_r2 = row.get(f"{best}_r2", linear_r2)
+            logger.info(
+                f"[trend] {mname}: r={r:.3f} (p={p_pear:.2e}), "
+                f"best={best} (R²={best_r2:.4f})"
+            )
 
         return pd.DataFrame(rows)
+
+    def _fit_quadratic(self, x, y, ss_res_lin, ss_tot, n) -> dict:
+        """Fit quadratic model and F-test vs linear."""
+        coeffs = np.polyfit(x, y, 2)
+        a, b, c = coeffs
+        y_pred = np.polyval(coeffs, x)
+        ss_res_quad = np.sum((y - y_pred) ** 2)
+        quad_r2 = 1.0 - ss_res_quad / ss_tot if ss_tot > 0 else 0.0
+
+        # F-test: quadratic vs linear (1 extra parameter)
+        df1 = 1  # extra parameters
+        df2 = n - 3  # residual df for quadratic
+        if df2 > 0 and ss_res_quad > 0:
+            f_stat = ((ss_res_lin - ss_res_quad) / df1) / (ss_res_quad / df2)
+            f_p = 1.0 - sp_stats.f.cdf(f_stat, df1, df2)
+        else:
+            f_stat, f_p = 0.0, 1.0
+
+        # AIC for model comparison
+        aic_lin = n * np.log(ss_res_lin / n + 1e-30) + 2 * 2
+        aic_quad = n * np.log(ss_res_quad / n + 1e-30) + 2 * 3
+
+        return {
+            'quad_a': a, 'quad_b': b, 'quad_c': c,
+            'quad_r2': quad_r2,
+            'quad_f': f_stat, 'quad_p': f_p,
+            'aic_linear': aic_lin, 'aic_quad': aic_quad,
+        }
+
+    def _fit_cubic(self, x, y, ss_res_lin, ss_tot, n) -> dict:
+        """Fit cubic model."""
+        coeffs = np.polyfit(x, y, 3)
+        y_pred = np.polyval(coeffs, x)
+        ss_res_cub = np.sum((y - y_pred) ** 2)
+        cubic_r2 = 1.0 - ss_res_cub / ss_tot if ss_tot > 0 else 0.0
+
+        aic_cub = n * np.log(ss_res_cub / n + 1e-30) + 2 * 4
+
+        return {
+            'cubic_coeffs': coeffs.tolist(),
+            'cubic_r2': cubic_r2,
+            'aic_cubic': aic_cub,
+        }
+
+    def _select_best_model(self, row: dict) -> str:
+        """Select best model based on AIC (lower = better), with parsimony bias."""
+        candidates = {'linear': row.get('aic_linear', np.inf)}
+
+        if 'aic_quad' in row:
+            # Only prefer quadratic if F-test is significant (p < 0.05)
+            if row.get('quad_p', 1.0) < 0.05:
+                candidates['quad'] = row['aic_quad']
+
+        if 'aic_cubic' in row:
+            candidates['cubic'] = row['aic_cubic']
+
+        # If no AIC computed, fall back to linear
+        if not candidates or all(np.isinf(v) for v in candidates.values()):
+            return 'linear'
+
+        return min(candidates, key=candidates.get)
 
 
 # ================================================================

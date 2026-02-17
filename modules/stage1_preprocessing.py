@@ -294,9 +294,16 @@ class Stage1Preprocessing:
     # --- other preprocessing steps ---
 
     def _compute_mdset(self, adj: np.ndarray) -> np.ndarray:
-        """Binary adjacency → Minimum Dominating Set."""
+        """Binary adjacency → Minimum Dominating Set.
+
+        Reads ``cfg['preprocessing']['mdset_method']``:
+            * ``'greedy'`` — fast heuristic (~5 ms / subject).  Default.
+            * ``'ilp'``    — exact ILP solver (minutes / subject).
+        """
+        pre_cfg = self.cfg.get('preprocessing', {})
+        method = pre_cfg.get('mdset_method', 'greedy')
         analyzer = NetworkAnalyzer(adj)
-        return analyzer.find_mdset(use_cache=True)
+        return analyzer.find_mdset(use_cache=True, method=method)
 
     def _compute_top_nodes(self, adj: np.ndarray) -> np.ndarray:
         """Binary adjacency → high-degree node indices (top *frac* %)."""

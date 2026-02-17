@@ -379,15 +379,21 @@ class MetricComputer:
         self.registry = registry or _REGISTRY
 
     def compute_all(self, conn: np.ndarray, cfg: dict) -> Dict[str, float]:
-        """From raw connectivity → dict of metric values."""
+        """From raw connectivity → threshold → MDSet → metrics."""
         net_cfg = cfg['network']
-        flags = cfg['metrics']
-
         adj = net.proportional_threshold(conn, net_cfg['density'])
         mdset = net.find_mdset(adj)
         top_nodes = net.top_degree_nodes(adj, net_cfg['frac'])
+        return self.compute_all_from_preprocessed(adj, mdset, top_nodes, cfg)
 
-        # PC cache: compute once if any PC metric is enabled
+    def compute_all_from_preprocessed(self, adj: np.ndarray, mdset: np.ndarray,
+                                       top_nodes: np.ndarray, cfg: dict) -> Dict[str, float]:
+        """From already-preprocessed adj/mdset/top_nodes → metric values.
+
+        This is the main workhorse called by the parallel pipeline.
+        """
+        flags = cfg['metrics']
+
         pc_cache = None
         if any(flags.get(m, False) for m in PC_METRICS):
             pc_cache = _pc_classify(adj, mdset, cfg)
@@ -410,10 +416,6 @@ class MetricComputer:
                 result[mname] = np.nan
 
         return result
-
-    def _compute_pc_cache(self, adj, mdset, cfg):
-        """Public alias so Stage2 can call it directly."""
-        return _pc_classify(adj, mdset, cfg)
 
 
 # ================================================================

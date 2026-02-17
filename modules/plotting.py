@@ -89,7 +89,7 @@ class BasePlotter:
 
 class ScatterTrendPlotter(BasePlotter):
     """
-    Age vs Metric scatter plot with regression line.
+    Age vs Metric scatter plot with regression line (linear or quadratic).
     """
 
     def plot(self, df: pd.DataFrame, mname: str, trend_row: dict):
@@ -99,7 +99,8 @@ class ScatterTrendPlotter(BasePlotter):
         Args:
             df: DataFrame with age and metric data
             mname: Metric name
-            trend_row: Dict with regression results (slope, intercept, r, p)
+            trend_row: Dict with regression results (slope, intercept, r, p,
+                       and optionally quad_a/b/c, quad_r2, best_model)
         """
         vals = df[mname].values
         age = df['age_years'].values
@@ -114,24 +115,62 @@ class ScatterTrendPlotter(BasePlotter):
                   alpha=self.cfg['viz']['scatter_alpha'],
                   c='#3366aa', edgecolors='none')
 
-        # Regression line
-        x_fit = np.linspace(age.min(), age.max(), 200)
-        y_fit = trend_row['slope'] * x_fit + trend_row['intercept']
-        ax.plot(x_fit, y_fit, 'r-', linewidth=2)
+        x_fit = np.linspace(age[valid].min(), age[valid].max(), 300)
+        best_model = trend_row.get('best_model', 'linear')
+
+        # Always draw linear fit (thin, grey)
+        y_lin = trend_row['slope'] * x_fit + trend_row['intercept']
+        ax.plot(x_fit, y_lin, color='#999999', linewidth=1.2, alpha=0.6,
+                linestyle='--', label=f"linear (R²={trend_row.get('linear_r2', 0):.3f})")
+
+        # Quadratic fit (bold red) if available and selected
+        if best_model == 'quad' and 'quad_a' in trend_row:
+            a, b, c = trend_row['quad_a'], trend_row['quad_b'], trend_row['quad_c']
+            y_quad = a * x_fit**2 + b * x_fit + c
+            ax.plot(x_fit, y_quad, 'r-', linewidth=2.2,
+                    label=f"quadratic (R²={trend_row.get('quad_r2', 0):.3f})")
+            # Mark vertex (peak/trough of inverted-U)
+            vertex_x = -b / (2 * a) if abs(a) > 1e-15 else None
+            if vertex_x is not None and age[valid].min() <= vertex_x <= age[valid].max():
+                vertex_y = a * vertex_x**2 + b * vertex_x + c
+                ax.plot(vertex_x, vertex_y, 'r*', ms=12, zorder=5)
+                ax.annotate(f'peak ≈ {vertex_x:.0f}y',
+                           (vertex_x, vertex_y),
+                           textcoords='offset points', xytext=(10, 10),
+                           fontsize=9, color='red',
+                           arrowprops=dict(arrowstyle='->', color='red', lw=0.8))
+        elif best_model == 'cubic' and 'cubic_coeffs' in trend_row:
+            coeffs = trend_row['cubic_coeffs']
+            y_cub = np.polyval(coeffs, x_fit)
+            ax.plot(x_fit, y_cub, 'r-', linewidth=2.2,
+                    label=f"cubic (R²={trend_row.get('cubic_r2', 0):.3f})")
+        else:
+            # Linear is best → make it bold red instead of grey
+            ax.lines[-1].set_color('red')
+            ax.lines[-1].set_linewidth(2)
+            ax.lines[-1].set_alpha(1.0)
+            ax.lines[-1].set_linestyle('-')
+
+        ax.legend(fontsize=8, loc='best')
 
         # Reference line
         ref_val, ref_text = self.get_ref(mname)
         if ref_val is not None:
             ax.axhline(ref_val, ls='--', color='k', lw=1.2, label=ref_text)
-            ax.legend(fontsize=9)
 
         # Labels and title
         ax.set_xlabel('Age (years)')
         ax.set_ylabel(self.get_label(mname))
-        title = (f"Age vs {mname}  "
-                f"(r={trend_row['r']:.3f}, p={trend_row['p_pearson']:.2e})  "
-                f"[{self.param_str}]")
-        ax.set_title(title)
+
+        # Build informative title
+        r2_best = trend_row.get(f'{best_model}_r2', trend_row.get('linear_r2', 0))
+        quad_info = ''
+        if best_model == 'quad' and 'quad_p' in trend_row:
+            quad_info = f", F-test p={trend_row['quad_p']:.2e}"
+        title = (f"{mname} vs Age  "
+                f"[best: {best_model}, R²={r2_best:.4f}{quad_info}]  "
+                f"(Pearson r={trend_row['r']:.3f})")
+        ax.set_title(title, fontsize=10)
         ax.grid(True, alpha=0.3)
 
         # Save
@@ -399,12 +438,18 @@ class TrendBinsSummaryPlotter(BasePlotter):
             y_roll = pd.Series(yu).rolling(window=win, center=True, min_periods=1).mean().to_numpy()
             return xu, y_roll
 
-    def plot(self, df: pd.DataFrame, metric_names: List[str]):
+    def plot(self, df: pd.DataFrame, metric_names: List[str],
+             trend_df: Optional[pd.DataFrame] = None):
         present = [m for m in metric_names if m in df.columns]
         if not present or 'age_years' not in df.columns:
             return
 
         from scipy import stats as sp_stats
+
+        # Build trend lookup if available
+        trend_map = {}
+        if trend_df is not None and not trend_df.empty:
+            trend_map = trend_df.set_index('metric').to_dict(orient='index')
 
         age = pd.to_numeric(df['age_years'], errors='coerce').to_numpy(dtype=float)
         labels = self._ordered_bin_labels(df)
@@ -421,7 +466,7 @@ class TrendBinsSummaryPlotter(BasePlotter):
             vals = pd.to_numeric(df[mname], errors='coerce').to_numpy(dtype=float)
             valid = np.isfinite(age) & np.isfinite(vals)
 
-            # Left: scatter + smooth trend line
+            # Left: scatter + smooth trend line + polynomial fit
             ax_l = axes[i, 0]
             if valid.sum() >= 4:
                 x = age[valid]
@@ -430,14 +475,34 @@ class TrendBinsSummaryPlotter(BasePlotter):
                     x, y, s=18, alpha=self.cfg['viz'].get('scatter_alpha', 0.5),
                     c='#3366aa', edgecolors='none'
                 )
+
+                # Smooth trend (LOESS-like)
                 tx, ty = self._smooth_trend(x, y)
                 ax_l.plot(tx, ty, color='#d62728', lw=2.2, alpha=0.95)
 
+                # Overlay polynomial fit if available
+                tr = trend_map.get(mname, {})
+                best = tr.get('best_model', 'linear')
+                x_fit = np.linspace(x.min(), x.max(), 300)
+
+                if best == 'quad' and 'quad_a' in tr:
+                    a, b, c = tr['quad_a'], tr['quad_b'], tr['quad_c']
+                    y_quad = a * x_fit**2 + b * x_fit + c
+                    ax_l.plot(x_fit, y_quad, color='#ff7f0e', lw=1.8,
+                              ls='--', alpha=0.85, label=f"quad R²={tr.get('quad_r2',0):.3f}")
+                    # Mark vertex
+                    vx = -b / (2*a) if abs(a) > 1e-15 else None
+                    if vx is not None and x.min() <= vx <= x.max():
+                        vy = a*vx**2 + b*vx + c
+                        ax_l.plot(vx, vy, '*', color='#ff7f0e', ms=10, zorder=5)
+                    ax_l.legend(fontsize=7, loc='best')
+
                 try:
                     r, p = sp_stats.pearsonr(x, y)
-                    st = f"r={r:.3f}, p={p:.2e}"
+                    r2_str = f"R²={tr.get(f'{best}_r2', r**2):.3f}"
+                    st = f"{best}: {r2_str}, r={r:.3f}"
                 except Exception:
-                    st = "r=NA, p=NA"
+                    st = "r=NA"
             else:
                 st = "insufficient data"
 

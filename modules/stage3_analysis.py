@@ -152,7 +152,7 @@ class Stage3Analysis:
         """
         logger.info("[Step 2] Lifespan Trend Analysis")
 
-        analyzer = LifespanAnalyzer(df_input, self.metric_names)
+        analyzer = LifespanAnalyzer(df_input, self.metric_names, cfg=self.cfg)
         trend_df = analyzer.analyze()
 
         logger.info(f"[Step 2] Analyzed {len(trend_df)} metrics")

@@ -18,6 +18,7 @@ paths:
 preprocessing:
   threshold_method: "proportional"    # "proportional" | "absolute" | "mst"
   absolute_threshold: null            # used only when method = "absolute"
+  mdset_method: "greedy"              # "greedy" (fast, ~5ms) | "ilp" (exact, minutes)
 
 # --- Network Parameters ---
 network:
@@ -26,7 +27,7 @@ network:
   frac: 0.05                  # DC: top 5% high-degree nodes
   pc_threshold: 0.50          # Provincial <= 0.5, Connector > 0.5
   frac_search_range: [0.01, 0.50, 0.01]  # start, stop, step for newDC
-  null_n: 200                 # number of null graphs per subject (start with 30~50 to test)
+  null_n: 20                 # number of null graphs per subject (start with 30~50 to test)
   null_swaps_per_edge: 10     # Maslov–Sneppen swaps per edge
   null_seed: 0                # reproducibility (optional)
 

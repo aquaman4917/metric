@@ -23,6 +23,26 @@ logger = logging.getLogger(__name__)
 
 
 # ================================================================
+# Module-level worker (picklable — no bound methods)
+# ================================================================
+
+def _worker(adj: np.ndarray, mdset: np.ndarray,
+            top_nodes: np.ndarray, cfg: dict) -> Dict[str, float]:
+    """
+    Compute all enabled metrics for one subject.
+
+    This is a module-level function so joblib can pickle it without
+    serialising the entire Stage2Metrics / MetricRegistry instance.
+    """
+    try:
+        computer = MetricComputer()
+        return computer.compute_all_from_preprocessed(adj, mdset, top_nodes, cfg)
+    except Exception as e:
+        logger.error(f"Worker failed: {e}")
+        return {m: np.nan for m, on in cfg['metrics'].items() if on}
+
+
+# ================================================================
 # Stage 2 Class
 # ================================================================
 
@@ -34,201 +54,72 @@ class Stage2Metrics:
     """
 
     def __init__(self, cfg: dict, preprocessed: PreprocessedData):
-        """
-        Initialize metrics stage.
-
-        Args:
-            cfg: Full configuration dict
-            preprocessed: Output from Stage 1
-        """
         self.cfg = cfg
         self.preprocessed = preprocessed
-        self.registry = get_metric_registry()
-        self.computer = MetricComputer(self.registry)
 
     @classmethod
     def run(cls, cfg: dict, preprocessed: PreprocessedData) -> pd.DataFrame:
-        """
-        Execute Stage 2 metric computation.
-
-        Args:
-            cfg: Configuration dict
-            preprocessed: Preprocessed data from Stage 1
-
-        Returns:
-            DataFrame with age and metric columns
-        """
         stage = cls(cfg, preprocessed)
         return stage.execute()
 
     @classmethod
     def list_available_metrics(cls) -> List[str]:
-        """
-        List all available metrics in the registry.
-
-        Returns:
-            List of metric names
-        """
-        registry = get_metric_registry()
-        return list(registry.get_all().keys())
+        return list(get_metric_registry().get_all().keys())
 
     @classmethod
     def get_enabled_metrics(cls, cfg: dict) -> List[str]:
-        """
-        Get list of enabled metric names from config.
-
-        Args:
-            cfg: Configuration dict
-
-        Returns:
-            List of enabled metric names
-        """
         return _active_metrics(cfg)
 
     def execute(self) -> pd.DataFrame:
-        """
-        Execute metric computation for all subjects.
-
-        Returns:
-            DataFrame with results
-        """
-        logger.info("="*60)
+        logger.info("=" * 60)
         logger.info("  Stage 2: Metric Computation")
-        logger.info("="*60)
+        logger.info("=" * 60)
 
-        # Get enabled metrics
-        enabled_metrics = self.get_enabled_metrics(self.cfg)
-        logger.info(f"[Stage2] Enabled metrics ({len(enabled_metrics)}): "
-                   f"{', '.join(enabled_metrics)}")
+        enabled = self.get_enabled_metrics(self.cfg)
+        logger.info(f"[Stage2] Enabled metrics ({len(enabled)}): {', '.join(enabled)}")
 
-        # Compute metrics for all subjects
         results_list = self._compute_all_subjects()
-
-        # Build DataFrame
         df = self._build_dataframe(results_list)
+        self._print_summary(df, enabled)
 
-        # Print summary
-        self._print_summary(df, enabled_metrics)
-
-        logger.info(f"[Stage2] Complete: {len(df)} subjects, "
-                   f"{len(enabled_metrics)} metrics")
-
+        logger.info(f"[Stage2] Complete: {len(df)} subjects, {len(enabled)} metrics")
         return df
 
     def _compute_all_subjects(self) -> List[Dict[str, float]]:
-        """
-        Compute metrics for all subjects (with optional parallelization).
-
-        Returns:
-            List of result dicts
-        """
         n_subj = self.preprocessed.n_subjects
         use_parallel = self.cfg['compute']['parallel']
 
         logger.info(f"[Stage2] Computing metrics for {n_subj} subjects "
-                   f"(parallel={use_parallel})...")
+                    f"(parallel={use_parallel})...")
+
+        pre = self.preprocessed
+        cfg = self.cfg
 
         if use_parallel:
-            n_jobs = self.cfg['compute']['n_jobs']
+            n_jobs = cfg['compute']['n_jobs']
             results_list = Parallel(n_jobs=n_jobs, verbose=0)(
-                delayed(self._compute_one_subject)(i)
+                delayed(_worker)(
+                    pre.conn_binary[i],
+                    pre.mdsets[i],
+                    pre.top_nodes[i],
+                    cfg,
+                )
                 for i in tqdm(range(n_subj), desc="Computing metrics")
             )
         else:
-            results_list = []
-            for i in tqdm(range(n_subj), desc="Computing metrics"):
-                results_list.append(self._compute_one_subject(i))
+            results_list = [
+                _worker(pre.conn_binary[i], pre.mdsets[i], pre.top_nodes[i], cfg)
+                for i in tqdm(range(n_subj), desc="Computing metrics")
+            ]
 
         return results_list
 
-    def _compute_one_subject(self, idx: int) -> Dict[str, float]:
-        """
-        Compute all enabled metrics for a single subject.
-
-        Args:
-            idx: Subject index
-
-        Returns:
-            Dict of metric_name → value
-        """
-        try:
-            # Get preprocessed features for this subject
-            adj = self.preprocessed.conn_binary[idx]
-            mdset = self.preprocessed.mdsets[idx]
-            top_nodes = self.preprocessed.top_nodes[idx]
-
-            # Compute metrics using direct method (bypassing thresholding)
-            result = self._compute_metrics_direct(adj, mdset, top_nodes)
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Subject {idx} failed: {e}")
-            enabled = self.get_enabled_metrics(self.cfg)
-            return {m: np.nan for m in enabled}
-
-    def _compute_metrics_direct(self, adj: np.ndarray, mdset: np.ndarray,
-                               top_nodes: np.ndarray) -> Dict[str, float]:
-        """
-        Compute metrics directly from preprocessed features.
-
-        Args:
-            adj: Binary adjacency matrix
-            mdset: MDSet node indices
-            top_nodes: High-degree node indices
-
-        Returns:
-            Dict of metric_name → value
-        """
-        metric_flags = self.cfg['metrics']
-        result = {}
-
-        # Check for PC metrics (need special handling)
-        need_pc = any(metric_flags.get(m, False)
-                     for m in ['DC_PC', 'OCA_P', 'OCA_C', 'Prov_ratio'])
-        pc_cache = None
-
-        if need_pc:
-            pc_cache = self.computer._compute_pc_cache(adj, mdset, self.cfg)
-
-        # Compute each enabled metric
-        for metric_name, enabled in metric_flags.items():
-            if not enabled:
-                continue
-
-            metric = self.registry.get(metric_name)
-            if metric is None:
-                logger.warning(f"Metric '{metric_name}' enabled but not found")
-                continue
-
-            try:
-                # Use cached PC results if available
-                if metric_name in ['DC_PC', 'OCA_P', 'OCA_C', 'Prov_ratio'] and pc_cache:
-                    result[metric_name] = pc_cache[metric_name]
-                else:
-                    result[metric_name] = metric.compute(adj, mdset, top_nodes, self.cfg)
-            except Exception as e:
-                logger.error(f"Failed to compute {metric_name}: {e}")
-                result[metric_name] = np.nan
-
-        return result
-
     def _build_dataframe(self, results_list: List[Dict[str, float]]) -> pd.DataFrame:
-        """
-        Build results DataFrame with age and metric columns.
-
-        Args:
-            results_list: List of metric result dicts
-
-        Returns:
-            DataFrame
-        """
         logger.info("[Stage2] Building DataFrame...")
         df = pd.DataFrame(results_list)
         return build_age_columns(df, self.preprocessed.age, self.cfg)
 
     def _print_summary(self, df: pd.DataFrame, metric_names: List[str]):
-        """Print summary statistics for computed metrics."""
         print_metric_summary(df, metric_names)
 
 
@@ -237,19 +128,8 @@ class Stage2Metrics:
 # ================================================================
 
 def run_metrics(cfg: dict, preprocessed: PreprocessedData) -> pd.DataFrame:
-    """
-    Execute Stage 2 metric computation (backward compatible).
-
-    Args:
-        cfg: Configuration dict
-        preprocessed: Preprocessed data from Stage 1
-
-    Returns:
-        DataFrame with metrics
-    """
     return Stage2Metrics.run(cfg, preprocessed)
 
 
 def list_available_metrics() -> List[str]:
-    """List all available metrics."""
     return Stage2Metrics.list_available_metrics()
