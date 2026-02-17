@@ -60,7 +60,7 @@ def run_pipeline(cfg: dict) -> dict:
     Execute the full 4-stage pipeline for one configuration.
 
     Returns:
-        dict with keys: df, trend, bin_stats, stat_results, qc_meta, cfg
+        dict with keys: df, trend, partial_corr, bin_stats, stat_results, qc_meta, cfg
     """
     dirs = setup_run_dirs(cfg)
     pstr = dirs['param_str']
@@ -84,7 +84,7 @@ def run_pipeline(cfg: dict) -> dict:
     df.to_csv(raw_csv, index=False)
     logger.info("[output] Raw CSV: %s", raw_csv)
 
-    # ---- Stage 3: Analysis (QC + trends + bins + stats) ----
+    # ---- Stage 3: Analysis (QC + trends + partial + bins + stats) ----
     analysis_results = Stage3Analysis.run(cfg, df, metrics_list)
 
     # Persist analysis outputs
@@ -109,6 +109,7 @@ def run_pipeline(cfg: dict) -> dict:
     return {
         'df': analysis_results.df,
         'trend': analysis_results.trend_df,
+        'partial_corr': analysis_results.partial_corr_df,
         'bin_stats': analysis_results.bin_stats_df,
         'stat_results': analysis_results.stat_results,
         'qc_meta': analysis_results.qc_meta,

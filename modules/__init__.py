@@ -24,6 +24,7 @@ from .stage1_preprocessing import Stage1Preprocessing, PreprocessedData
 from .stage2_metrics import Stage2Metrics
 from .stage3_analysis import Stage3Analysis, AnalysisResults
 from .stage4_visualization import Stage4Visualization
+from .mds_conditional_zscore import MDSConditionalZScore, mds_conditional_zscore
 
 # ---- Shared utilities ----
 from .utils import (
@@ -44,6 +45,8 @@ __all__ = [
     "Stage2Metrics",
     "Stage3Analysis",
     "Stage4Visualization",
+    "MDSConditionalZScore",
+    "mds_conditional_zscore",
     # Data containers
     "PreprocessedData",
     "AnalysisResults",

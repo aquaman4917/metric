@@ -29,28 +29,12 @@ class LifespanAnalyzer:
 
     def __init__(self, df: pd.DataFrame, metric_names: List[str],
                  cfg: Optional[dict] = None):
-        """
-        Initialize analyzer.
-
-        Args:
-            df: DataFrame with age and metric columns
-            metric_names: List of metric names to analyze
-            cfg: Optional config dict (reads stats.trend_model)
-        """
         self.df = df
         self.metric_names = metric_names
         self.cfg = cfg or {}
         self.trend_model = self.cfg.get('stats', {}).get('trend_model', 'linear')
 
     def analyze(self) -> pd.DataFrame:
-        """
-        Compute age-metric correlations and regression fits.
-
-        Returns:
-            DataFrame with columns including:
-                metric, r, p_pearson, rho, p_spearman, slope, intercept, n,
-                linear_r2, quad_r2, quad_a/b/c, quad_f, quad_p, best_model
-        """
         age = self.df['age_years'].values
         rows = []
 
@@ -68,11 +52,9 @@ class LifespanAnalyzer:
             x, y = age[valid], vals[valid]
             n = len(x)
 
-            # Pearson / Spearman correlations (always computed)
             r, p_pear = sp_stats.pearsonr(x, y)
             rho, p_spear = sp_stats.spearmanr(x, y)
 
-            # Linear regression
             slope, intercept = np.polyfit(x, y, 1)
             y_pred_lin = slope * x + intercept
             ss_res_lin = np.sum((y - y_pred_lin) ** 2)
@@ -91,17 +73,13 @@ class LifespanAnalyzer:
                 'linear_r2': linear_r2,
             }
 
-            # Quadratic fit (when trend_model is 'quadratic' or 'cubic')
             if self.trend_model in ('quadratic', 'cubic') and n >= 15:
                 row.update(self._fit_quadratic(x, y, ss_res_lin, ss_tot, n))
 
-            # Cubic fit (when trend_model is 'cubic')
             if self.trend_model == 'cubic' and n >= 20:
                 row.update(self._fit_cubic(x, y, ss_res_lin, ss_tot, n))
 
-            # Determine best model
             row['best_model'] = self._select_best_model(row)
-
             rows.append(row)
 
             best = row['best_model']
@@ -114,23 +92,20 @@ class LifespanAnalyzer:
         return pd.DataFrame(rows)
 
     def _fit_quadratic(self, x, y, ss_res_lin, ss_tot, n) -> dict:
-        """Fit quadratic model and F-test vs linear."""
         coeffs = np.polyfit(x, y, 2)
         a, b, c = coeffs
         y_pred = np.polyval(coeffs, x)
         ss_res_quad = np.sum((y - y_pred) ** 2)
         quad_r2 = 1.0 - ss_res_quad / ss_tot if ss_tot > 0 else 0.0
 
-        # F-test: quadratic vs linear (1 extra parameter)
-        df1 = 1  # extra parameters
-        df2 = n - 3  # residual df for quadratic
+        df1 = 1
+        df2 = n - 3
         if df2 > 0 and ss_res_quad > 0:
             f_stat = ((ss_res_lin - ss_res_quad) / df1) / (ss_res_quad / df2)
             f_p = 1.0 - sp_stats.f.cdf(f_stat, df1, df2)
         else:
             f_stat, f_p = 0.0, 1.0
 
-        # AIC for model comparison
         aic_lin = n * np.log(ss_res_lin / n + 1e-30) + 2 * 2
         aic_quad = n * np.log(ss_res_quad / n + 1e-30) + 2 * 3
 
@@ -142,12 +117,10 @@ class LifespanAnalyzer:
         }
 
     def _fit_cubic(self, x, y, ss_res_lin, ss_tot, n) -> dict:
-        """Fit cubic model."""
         coeffs = np.polyfit(x, y, 3)
         y_pred = np.polyval(coeffs, x)
         ss_res_cub = np.sum((y - y_pred) ** 2)
         cubic_r2 = 1.0 - ss_res_cub / ss_tot if ss_tot > 0 else 0.0
-
         aic_cub = n * np.log(ss_res_cub / n + 1e-30) + 2 * 4
 
         return {
@@ -157,22 +130,141 @@ class LifespanAnalyzer:
         }
 
     def _select_best_model(self, row: dict) -> str:
-        """Select best model based on AIC (lower = better), with parsimony bias."""
         candidates = {'linear': row.get('aic_linear', np.inf)}
 
         if 'aic_quad' in row:
-            # Only prefer quadratic if F-test is significant (p < 0.05)
             if row.get('quad_p', 1.0) < 0.05:
                 candidates['quad'] = row['aic_quad']
 
         if 'aic_cubic' in row:
             candidates['cubic'] = row['aic_cubic']
 
-        # If no AIC computed, fall back to linear
         if not candidates or all(np.isinf(v) for v in candidates.values()):
             return 'linear'
 
         return min(candidates, key=candidates.get)
+
+
+# ================================================================
+# Partial Correlation Analyzer
+# ================================================================
+
+class PartialCorrelationAnalyzer:
+    """
+    Computes partial correlations between age and each metric,
+    controlling for one or more covariates (default: MDS_size).
+
+    Method: residualization (OLS).
+      1. Regress metric on covariates → residuals_y
+      2. Regress age    on covariates → residuals_x
+      3. Pearson r(residuals_x, residuals_y)
+
+    Equivalent to the partial correlation controlling for covariates
+    on both sides. No external dependencies beyond numpy/scipy.
+
+    Typical use — disentangle MDS_size from age effects::
+
+        analyzer = PartialCorrelationAnalyzer(df, metric_names,
+                                              covariates=['MDS_size'])
+        results = analyzer.analyze()
+        # compare r_zero vs r_partial to see how much MDS_size explains
+    """
+
+    def __init__(self, df: pd.DataFrame, metric_names: List[str],
+                 covariates: List[str] = None, cfg: Optional[dict] = None):
+        """
+        Args:
+            df:            DataFrame with 'age_years', metrics, and covariates.
+            metric_names:  Metrics to analyze.
+            covariates:    Columns to control for. Defaults to ['MDS_size'].
+            cfg:           Unused; kept for API consistency.
+        """
+        self.df = df
+        self.metric_names = metric_names
+        if covariates is None:
+            requested_covariates = ['MDS_size', 'MDS_size_fraction']
+        else:
+            requested_covariates = list(covariates)
+        self.covariates = []
+        for c in requested_covariates:
+            if c in self.df.columns and c not in self.covariates:
+                self.covariates.append(c)
+        missing_covariates = [c for c in requested_covariates if c not in self.df.columns]
+        if missing_covariates:
+            logger.warning(
+                "[partial_corr] Missing covariates skipped: %s",
+                ", ".join(missing_covariates),
+            )
+        self.cfg = cfg or {}
+
+    def analyze(self) -> pd.DataFrame:
+        """
+        Run partial correlations for all metrics.
+
+        Returns:
+            DataFrame with columns:
+                metric, r_partial, p_partial, r_zero, p_zero, n, covariates
+        """
+        out_cols = ['metric', 'r_partial', 'p_partial', 'r_zero', 'p_zero', 'n', 'covariates']
+        if not self.covariates:
+            logger.warning("[partial_corr] No valid covariates found. Analysis skipped.")
+            return pd.DataFrame(columns=out_cols)
+
+        rows = []
+        for mname in self.metric_names:
+            if mname not in self.df.columns:
+                continue
+            if mname in self.covariates:
+                logger.info(f"[partial_corr] {mname}: metric is covariate, skipping")
+                continue
+            result = self._partial_corr_one(mname)
+            if result is not None:
+                rows.append(result)
+        return pd.DataFrame(rows, columns=out_cols)
+
+    def _partial_corr_one(self, mname: str) -> Optional[dict]:
+        cols_needed = ['age_years', mname] + self.covariates
+        sub = self.df[cols_needed].copy()
+        sub = sub.replace([np.inf, -np.inf], np.nan).dropna()
+
+        n = len(sub)
+        if n < 20:
+            logger.warning(f"[partial_corr] {mname}: only {n} valid rows, skipping")
+            return None
+
+        age = sub['age_years'].values
+        y   = sub[mname].values
+        X   = sub[self.covariates].values
+
+        r_zero, p_zero = sp_stats.pearsonr(age, y)
+
+        resid_age    = self._ols_residuals(X, age)
+        resid_metric = self._ols_residuals(X, y)
+
+        r_partial, p_partial = sp_stats.pearsonr(resid_age, resid_metric)
+
+        logger.info(
+            f"[partial_corr] {mname}: r_zero={r_zero:.3f} -> "
+            f"r_partial={r_partial:.3f} (p={p_partial:.2e}), "
+            f"covariates={self.covariates}"
+        )
+
+        return {
+            'metric':     mname,
+            'r_partial':  r_partial,
+            'p_partial':  p_partial,
+            'r_zero':     r_zero,
+            'p_zero':     p_zero,
+            'n':          n,
+            'covariates': '+'.join(self.covariates),
+        }
+
+    @staticmethod
+    def _ols_residuals(X: np.ndarray, y: np.ndarray) -> np.ndarray:
+        """OLS residuals of y ~ intercept + X."""
+        X_aug = np.column_stack([np.ones(len(y)), X])
+        beta, *_ = np.linalg.lstsq(X_aug, y, rcond=None)
+        return y - X_aug @ beta
 
 
 # ================================================================
@@ -182,40 +274,20 @@ class LifespanAnalyzer:
 class AgeBinAnalyzer:
     """
     Handles age binning and bin-level statistics.
-
-    Supports both manual and automatic binning strategies.
     """
 
     def __init__(self, df: pd.DataFrame, cfg: dict):
-        """
-        Initialize analyzer.
-
-        Args:
-            df: DataFrame with age data
-            cfg: Configuration dict with age binning settings
-        """
         self.df = df
         self.cfg = cfg
 
     def assign_bins(self) -> pd.DataFrame:
-        """
-        Assign age bins to each subject.
-
-        Adds 'age_bin' and 'age_bin_label' columns to DataFrame.
-
-        Returns:
-            DataFrame with bin assignments
-        """
         df = self.df.copy()
         age_m = df['age_months'].values
-
         bins_cfg = self.cfg['age'].get('bins')
 
         if bins_cfg is not None and len(bins_cfg) > 0:
-            # Manual bins: [[low, high, label], ...]
             bin_idx, labels = self._manual_binning(age_m, bins_cfg)
         else:
-            # Auto bins
             auto = self.cfg['age']['auto_bins']
             bin_idx, labels = self._auto_binning(age_m, auto)
 
@@ -224,7 +296,6 @@ class AgeBinAnalyzer:
         label_map[0] = 'unassigned'
         df['age_bin_label'] = df['age_bin'].map(label_map)
 
-        # Summary
         unassigned = (bin_idx == 0).sum()
         if unassigned > 0:
             logger.warning(f"[bins] {unassigned} subjects not assigned to any bin")
@@ -235,41 +306,17 @@ class AgeBinAnalyzer:
 
         return df
 
-    def _manual_binning(self, age_m: np.ndarray,
-                       bins_cfg: List) -> Tuple[np.ndarray, List[str]]:
-        """
-        Apply manual bin definitions.
-
-        Args:
-            age_m: Age in months
-            bins_cfg: List of [low, high, label] triplets
-
-        Returns:
-            (bin_indices, labels)
-        """
+    def _manual_binning(self, age_m, bins_cfg):
         bin_idx = np.zeros(len(age_m), dtype=np.int32)
         labels = []
-
         for i, b in enumerate(bins_cfg):
             low, high, label = b[0], b[1], b[2]
             labels.append(label)
             mask = (age_m >= low) & (age_m < high)
-            bin_idx[mask] = i + 1  # 1-indexed, 0 = unassigned
-
+            bin_idx[mask] = i + 1
         return bin_idx, labels
 
-    def _auto_binning(self, age_m: np.ndarray,
-                     auto_cfg: dict) -> Tuple[np.ndarray, List[str]]:
-        """
-        Apply automatic binning.
-
-        Args:
-            age_m: Age in months
-            auto_cfg: Auto binning config (count, method)
-
-        Returns:
-            (bin_indices, labels)
-        """
+    def _auto_binning(self, age_m, auto_cfg):
         n_bins = auto_cfg['count']
         method = auto_cfg['method']
 
@@ -279,23 +326,12 @@ class AgeBinAnalyzer:
         else:
             edges = np.linspace(age_m.min(), age_m.max() + 1, n_bins + 1)
 
-        bin_idx = np.digitize(age_m, edges[1:-1]) + 1  # 1-indexed
+        bin_idx = np.digitize(age_m, edges[1:-1]) + 1
         labels = [f"{edges[i]:.0f}-{edges[i+1]:.0f}m" for i in range(n_bins)]
-
         return bin_idx, labels
 
     def compute_bin_stats(self, df: pd.DataFrame,
-                         metric_names: List[str]) -> pd.DataFrame:
-        """
-        Compute per-bin summary statistics for each metric.
-
-        Args:
-            df: DataFrame with bin assignments
-            metric_names: List of metric names
-
-        Returns:
-            DataFrame with: metric, bin, label, n, mean, std, median, iqr
-        """
+                          metric_names: List[str]) -> pd.DataFrame:
         rows = []
         bins = df['age_bin'].values
         unique_bins = sorted(set(bins) - {0})
@@ -332,36 +368,14 @@ class AgeBinAnalyzer:
 class StatisticalTestAnalyzer:
     """
     Performs statistical tests across age bins.
-
-    Supports Kruskal-Wallis and pairwise Mann-Whitney U tests
-    with multiple comparison correction.
     """
 
     def __init__(self, df: pd.DataFrame, metric_names: List[str], cfg: dict):
-        """
-        Initialize analyzer.
-
-        Args:
-            df: DataFrame with bin assignments and metrics
-            metric_names: List of metric names
-            cfg: Configuration dict with stats settings
-        """
         self.df = df
         self.metric_names = metric_names
         self.cfg = cfg
 
     def run_tests(self) -> Dict[str, dict]:
-        """
-        Run statistical tests for all metrics.
-
-        For each metric:
-            1. Kruskal-Wallis across all bins
-            2. Pairwise Mann-Whitney U between bin pairs
-            3. Multiple comparison correction
-
-        Returns:
-            Dict[metric_name → {kw_stat, kw_p, pairwise: [results]}]
-        """
         alpha = self.cfg['stats']['alpha']
         correction = self.cfg['stats']['correction']
         bins = self.df['age_bin'].values
@@ -378,34 +392,28 @@ class StatisticalTestAnalyzer:
             if valid.sum() < 20:
                 continue
 
-            # Group data
             groups = [vals[(bins == bi) & valid] for bi in unique_bins]
             groups = [g for g in groups if len(g) >= 3]
 
             if len(groups) < 2:
                 continue
 
-            # Kruskal-Wallis test
             kw_stat, kw_p = sp_stats.kruskal(*groups)
             try:
                 anova_f, anova_p = sp_stats.f_oneway(*groups)
             except Exception:
                 anova_f, anova_p = np.nan, np.nan
 
-            # Pairwise tests
             pairwise = self._pairwise_tests(vals, bins, unique_bins, valid)
 
-            # Multiple comparison correction
             if pairwise:
                 raw_pvals = [pw['p'] for pw in pairwise]
                 corrected = self._correct_pvalues(np.array(raw_pvals), correction)
-
                 for k, pw in enumerate(pairwise):
                     pw['p_corrected'] = corrected[k]
                     pw['sig'] = corrected[k] < alpha
 
             n_sig = sum(1 for pw in pairwise if pw.get('sig', False))
-
             results[mname] = {
                 'kw_stat': kw_stat,
                 'kw_p': kw_p,
@@ -422,22 +430,8 @@ class StatisticalTestAnalyzer:
 
         return results
 
-    def _pairwise_tests(self, vals: np.ndarray, bins: np.ndarray,
-                       unique_bins: List[int], valid: np.ndarray) -> List[dict]:
-        """
-        Perform pairwise Mann-Whitney U tests.
-
-        Args:
-            vals: Metric values
-            bins: Bin assignments
-            unique_bins: Unique bin indices
-            valid: Valid data mask
-
-        Returns:
-            List of pairwise test results
-        """
+    def _pairwise_tests(self, vals, bins, unique_bins, valid):
         pairwise = []
-
         for i in range(len(unique_bins)):
             for j in range(i + 1, len(unique_bins)):
                 g1 = vals[(bins == unique_bins[i]) & valid]
@@ -448,7 +442,6 @@ class StatisticalTestAnalyzer:
 
                 u_stat, p_val = sp_stats.mannwhitneyu(g1, g2, alternative='two-sided')
 
-                # Effect size: r = Z / sqrt(N)
                 n_total = len(g1) + len(g2)
                 mu = len(g1) * len(g2) / 2
                 sigma = np.sqrt(len(g1) * len(g2) * (n_total + 1) / 12)
@@ -462,20 +455,9 @@ class StatisticalTestAnalyzer:
                     'z': z,
                     'effect_r': effect_r,
                 })
-
         return pairwise
 
-    def _correct_pvalues(self, pvals: np.ndarray, method: str) -> np.ndarray:
-        """
-        Apply multiple comparison correction.
-
-        Args:
-            pvals: Array of p-values
-            method: 'bonferroni', 'fdr', or 'none'
-
-        Returns:
-            Corrected p-values
-        """
+    def _correct_pvalues(self, pvals, method):
         if method == 'bonferroni':
             return np.minimum(pvals * len(pvals), 1.0)
         elif method == 'fdr':
@@ -483,27 +465,14 @@ class StatisticalTestAnalyzer:
         else:
             return pvals
 
-    def _fdr_bh(self, pvals: np.ndarray) -> np.ndarray:
-        """
-        Benjamini-Hochberg FDR correction.
-
-        Args:
-            pvals: Array of p-values
-
-        Returns:
-            FDR-corrected p-values
-        """
+    def _fdr_bh(self, pvals):
         m = len(pvals)
         sorted_idx = np.argsort(pvals)
         sorted_p = pvals[sorted_idx]
-
         adjusted = sorted_p * m / np.arange(1, m + 1)
         adjusted = np.minimum(adjusted, 1.0)
-
-        # Enforce monotonicity from right
         for i in range(m - 2, -1, -1):
             adjusted[i] = min(adjusted[i], adjusted[i + 1])
-
         result = np.empty(m)
         result[sorted_idx] = adjusted
         return result
@@ -516,11 +485,6 @@ class StatisticalTestAnalyzer:
 class QCAnalyzer:
     """
     Subject-level QC using metric profiles.
-
-    Methods:
-      - zscore: outlier on per-subject metric mean z-score
-      - iqr: outlier on per-subject metric mean/std using IQR fence
-      - none: keep all subjects
     """
 
     def __init__(self, df: pd.DataFrame, metric_names: List[str], cfg: dict):
@@ -529,7 +493,6 @@ class QCAnalyzer:
         self.cfg = cfg
 
     def run(self) -> Tuple[pd.DataFrame, Dict[str, Any]]:
-        """Run QC and return filtered DataFrame + QC metadata."""
         qc_cfg = self.cfg.get('qc', {})
         method = str(qc_cfg.get('method', 'none')).lower()
         z_thr = float(qc_cfg.get('zscore_threshold', 3.0))
@@ -554,7 +517,6 @@ class QCAnalyzer:
         subject_mean = np.nanmean(x, axis=1)
         subject_std = np.nanstd(x, axis=1)
         enough_metric_mask = valid_counts >= max(1, min_metrics)
-
         inlier_mask = enough_metric_mask.copy()
         outlier_score = np.full(len(self.df), np.nan, dtype=float)
 
@@ -568,19 +530,17 @@ class QCAnalyzer:
             outlier_score = z
             inlier_mask = (z < z_thr) & enough_metric_mask
         elif method == 'iqr':
-            def _iqr_mask(vals: np.ndarray, factor: float) -> np.ndarray:
+            def _iqr_mask(vals, factor):
                 v = vals[np.isfinite(vals)]
                 if len(v) < 4:
                     return np.ones(len(vals), dtype=bool)
                 q1, q3 = np.percentile(v, [25, 75])
                 iqr = q3 - q1
-                lo = q1 - factor * iqr
-                hi = q3 + factor * iqr
-                return (vals >= lo) & (vals <= hi)
+                return (vals >= q1 - factor * iqr) & (vals <= q3 + factor * iqr)
 
-            mean_mask = _iqr_mask(subject_mean, iqr_factor)
-            std_mask = _iqr_mask(subject_std, iqr_factor)
-            inlier_mask = mean_mask & std_mask & enough_metric_mask
+            inlier_mask = _iqr_mask(subject_mean, iqr_factor) & \
+                          _iqr_mask(subject_std, iqr_factor) & \
+                          enough_metric_mask
         elif method == 'none':
             inlier_mask = enough_metric_mask
         else:
@@ -616,16 +576,30 @@ class QCAnalyzer:
 # ================================================================
 # Convenience Functions (for notebook / interactive use)
 # ================================================================
-#
-# The canonical pipeline uses Stage3Analysis (stage3_analysis.py).
-# These thin wrappers exist only for quick interactive exploration
-# in notebooks or scripts.  They are NOT used by main.py.
-# ================================================================
 
 def lifespan_trend(df: pd.DataFrame, metric_names: List[str],
                    cfg: dict = None) -> pd.DataFrame:
     """Compute age-metric correlations (convenience wrapper)."""
-    return LifespanAnalyzer(df, metric_names).analyze()
+    return LifespanAnalyzer(df, metric_names, cfg).analyze()
+
+
+def partial_corr_age(df: pd.DataFrame, metric_names: List[str],
+                     covariates: List[str] = None,
+                     cfg: dict = None) -> pd.DataFrame:
+    """
+    Partial correlations of metrics with age, controlling for covariates.
+
+    Defaults to controlling for MDS_size.
+    Compare r_zero vs r_partial to isolate structural age effects
+    from those driven by network size/density changes.
+
+    Example::
+
+        results = partial_corr_age(df, metric_names)
+        results = partial_corr_age(df, metric_names,
+                                   covariates=['MDS_size_fraction', 'mean_degree'])
+    """
+    return PartialCorrelationAnalyzer(df, metric_names, covariates, cfg).analyze()
 
 
 def assign_age_bins(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
@@ -633,8 +607,7 @@ def assign_age_bins(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return AgeBinAnalyzer(df, cfg).assign_bins()
 
 
-def bin_summary_stats(df: pd.DataFrame,
-                      metric_names: List[str],
+def bin_summary_stats(df: pd.DataFrame, metric_names: List[str],
                       cfg: dict = None) -> pd.DataFrame:
     """Per-bin summary statistics (convenience wrapper)."""
     if cfg is None:

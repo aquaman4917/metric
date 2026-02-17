@@ -34,17 +34,29 @@ network:
   
 # --- Metrics (on/off) ---
 metrics:
-  MDS_size: false
-  Deg_conc: false
+  MDS_size: true
+  Deg_conc: true
   DC: true
   OCA: true
-  DC_z: true
-  OCA_z: true
-  newDC: false
-  DC_PC: false
-  OCA_P: false
-  OCA_C: false
-  Prov_ratio: false
+  OCA_norm: true
+  DC_cz: true
+  OCA_cz: true
+  OCA_norm_cz: false
+  OCA_P_cz: false
+  OCA_C_cz: false
+  DC_PC_cz: false
+  OCA_P_norm_cz: false
+  OCA_C_norm_cz: false
+  Prov_ratio_cz: false
+  Deg_conc_cz: false
+  newDC_cz: false
+  DC_z: false
+  OCA_z: false
+  newDC: true
+  DC_PC: true
+  OCA_P: true
+  OCA_C: true
+  Prov_ratio: true
 
 # --- Subregion ---
 # null = whole brain. Or specify label from BNA_subregions.xlsx
@@ -71,13 +83,20 @@ stats:
   alpha: 0.05
   correction: "bonferroni"    # 'none', 'bonferroni', 'fdr'
   trend_model: "linear"       # 'linear', 'quadratic'
+  partial_corr_age:
+    enabled: true
+    covariates: ["MDS_size"]  # columns to control for
+  mds_conditional_zscore:
+    n_bins: 10
+    min_bin_n: 20
+    mds_col: "MDS_size"
 
 # --- Subject QC (consensus-style) ---
 qc:
-  method: "zscore"            # 'zscore', 'iqr', 'none'
+  method: "none"              # 'zscore', 'iqr', 'none'
   zscore_threshold: 3.0
   iqr_factor: 1.5
-  min_metrics: 3              # minimum valid metric count per subject
+  min_metrics: 1              # minimum valid metric count per subject
 
 # --- Visualization ---
 viz:

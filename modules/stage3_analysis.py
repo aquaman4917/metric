@@ -3,9 +3,10 @@ Stage 3: Statistical Analysis
 ==============================
 Pipeline:
   1. Lifespan trend analysis (correlations & regressions)
-  2. Age binning & bin-level statistics
-  3. Statistical tests (Kruskal-Wallis, Mann-Whitney U)
-  4. Multiple comparison correction
+  2. Partial correlation analysis (age-controlled)
+  3. Age binning & bin-level statistics
+  4. Statistical tests (Kruskal-Wallis, Mann-Whitney U)
+  5. Multiple comparison correction
 """
 
 import logging
@@ -16,7 +17,13 @@ import pandas as pd
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from .analysis import LifespanAnalyzer, AgeBinAnalyzer, StatisticalTestAnalyzer, QCAnalyzer
+from .analysis import (
+    LifespanAnalyzer,
+    PartialCorrelationAnalyzer,
+    AgeBinAnalyzer,
+    StatisticalTestAnalyzer,
+    QCAnalyzer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +42,14 @@ class AnalysisResults:
         trend_df: Lifespan trend analysis results
         bin_stats_df: Per-bin summary statistics
         stat_results: Statistical test results
+        partial_corr_df: Partial-correlation analysis results
         qc_meta: Subject-level QC metadata
     """
     df: pd.DataFrame
     trend_df: pd.DataFrame
     bin_stats_df: pd.DataFrame
     stat_results: Dict[str, dict]
+    partial_corr_df: Optional[pd.DataFrame] = None
     qc_meta: Optional[Dict[str, object]] = None
 
     def __repr__(self) -> str:
@@ -58,7 +67,8 @@ class Stage3Analysis:
     """
     Stage 3: Statistical analysis.
 
-    Performs lifespan trend analysis, age binning, and statistical tests.
+    Performs lifespan trend analysis, partial correlations, age binning,
+    and statistical tests.
     """
 
     def __init__(self, cfg: dict, df: pd.DataFrame, metric_names: List[str]):
@@ -107,19 +117,23 @@ class Stage3Analysis:
         # Step 2: Lifespan trend analysis
         trend_df = self._lifespan_trend_analysis(df_qc)
 
-        # Step 3: Age binning
+        # Step 3: Partial correlation analysis (optional)
+        partial_corr_df = self._partial_corr_analysis(df_qc)
+
+        # Step 4: Age binning
         df_with_bins = self._age_binning(df_qc)
 
-        # Step 4: Bin-level statistics
+        # Step 5: Bin-level statistics
         bin_stats_df = self._bin_statistics(df_with_bins)
 
-        # Step 5: Statistical tests
+        # Step 6: Statistical tests
         stat_results = self._statistical_tests(df_with_bins)
 
         # Create container
         results = AnalysisResults(
             df=df_with_bins,
             trend_df=trend_df,
+            partial_corr_df=partial_corr_df,
             bin_stats_df=bin_stats_df,
             stat_results=stat_results,
             qc_meta=qc_meta,
@@ -159,6 +173,37 @@ class Stage3Analysis:
 
         return trend_df
 
+    def _partial_corr_analysis(self, df_input: pd.DataFrame) -> pd.DataFrame:
+        """
+        Perform partial correlations with age, controlling for covariates.
+
+        Config:
+            stats.partial_corr_age.enabled: bool
+            stats.partial_corr_age.covariates: list[str]
+        """
+        logger.info("[Step 3] Partial Correlation Analysis")
+        pc_cfg = self.cfg.get('stats', {}).get('partial_corr_age', {})
+        if isinstance(pc_cfg, bool):
+            enabled = pc_cfg
+            covariates = None
+        else:
+            enabled = bool(pc_cfg.get('enabled', False))
+            covariates = pc_cfg.get('covariates')
+
+        if not enabled:
+            logger.info("[Step 3] Skipped (stats.partial_corr_age.enabled=false)")
+            return pd.DataFrame()
+
+        analyzer = PartialCorrelationAnalyzer(
+            df_input,
+            self.metric_names,
+            covariates=covariates,
+            cfg=self.cfg,
+        )
+        partial_corr_df = analyzer.analyze()
+        logger.info(f"[Step 3] Analyzed {len(partial_corr_df)} metrics")
+        return partial_corr_df
+
     def _age_binning(self, df_input: pd.DataFrame) -> pd.DataFrame:
         """
         Assign age bins to subjects.
@@ -166,13 +211,13 @@ class Stage3Analysis:
         Returns:
             DataFrame with bin assignments
         """
-        logger.info("[Step 3] Age Binning")
+        logger.info("[Step 4] Age Binning")
 
         analyzer = AgeBinAnalyzer(df_input, self.cfg)
         df_with_bins = analyzer.assign_bins()
 
         n_bins = df_with_bins['age_bin'].nunique() - 1  # Exclude 0
-        logger.info(f"[Step 3] Assigned {n_bins} age bins")
+        logger.info(f"[Step 4] Assigned {n_bins} age bins")
 
         return df_with_bins
 
@@ -186,12 +231,12 @@ class Stage3Analysis:
         Returns:
             DataFrame with bin statistics
         """
-        logger.info("[Step 4] Bin-Level Statistics")
+        logger.info("[Step 5] Bin-Level Statistics")
 
         analyzer = AgeBinAnalyzer(df, self.cfg)
         bin_stats_df = analyzer.compute_bin_stats(df, self.metric_names)
 
-        logger.info(f"[Step 4] Computed stats for {len(bin_stats_df)} bin-metric combinations")
+        logger.info(f"[Step 5] Computed stats for {len(bin_stats_df)} bin-metric combinations")
 
         return bin_stats_df
 
@@ -205,13 +250,13 @@ class Stage3Analysis:
         Returns:
             Dict of test results per metric
         """
-        logger.info("[Step 5] Statistical Tests")
+        logger.info("[Step 6] Statistical Tests")
 
         analyzer = StatisticalTestAnalyzer(df, self.metric_names, self.cfg)
         stat_results = analyzer.run_tests()
 
         n_tested = len(stat_results)
-        logger.info(f"[Step 5] Tested {n_tested} metrics")
+        logger.info(f"[Step 6] Tested {n_tested} metrics")
 
         return stat_results
 
@@ -230,6 +275,12 @@ class Stage3Analysis:
         trend_path = os.path.join(out_dir, f"trend_{param_str}.csv")
         results.trend_df.to_csv(trend_path, index=False)
         logger.info(f"  Saved: {trend_path}")
+
+        # Save partial-correlation results
+        if results.partial_corr_df is not None and not results.partial_corr_df.empty:
+            partial_path = os.path.join(out_dir, f"partial_corr_age_{param_str}.csv")
+            results.partial_corr_df.to_csv(partial_path, index=False)
+            logger.info(f"  Saved: {partial_path}")
 
         # Save QC metadata
         if results.qc_meta is not None:
