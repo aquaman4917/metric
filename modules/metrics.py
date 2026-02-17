@@ -10,7 +10,6 @@ Example::
     def My_metric(adj, mdset, top_nodes, cfg):
         return some_value
 """
-
 import logging
 import numpy as np
 from typing import Callable, Dict, Optional
@@ -150,6 +149,28 @@ def OCA_norm(adj, mdset, top_nodes, cfg):
     return total / m   # = Σ|C(i)| / M
 
 
+###############################################################################
+# New Metric: Normalized Overlap Redundancy (NOR)
+###############################################################################
+
+@metric('NOR', label='Normalized Overlap Redundancy')
+def NOR(adj, mdset, top_nodes, cfg):
+    """
+    Normalized Overlap Redundancy (NOR) measures overlap redundancy independent of MDS size.
+    Defined as (OCA - 1) / (M - 1), where
+    OCA = Σ|C(i)| / N and M = |MDSet|.
+    Returns NaN if M <= 1.
+    """
+    n = adj.shape[0]
+    m = len(mdset)
+    if m <= 1:
+        return np.nan
+    total = net.sum_control_area_sizes(adj, mdset)
+    # Compute OCA (mean total control area per node)
+    oca = total / n if n > 0 else np.nan
+    return (oca - 1.0) / (m - 1.0)
+
+
 @metric('newDC', label='newDC (FRAC where DC ≈ 1)')
 def newDC(adj, mdset, top_nodes, cfg):
     """FRAC value where DC crosses 1.0 (linear interpolation)."""
@@ -240,29 +261,11 @@ def Prov_ratio(adj, mdset, top_nodes, cfg):
 
 @metric('OCA_P_norm', label='OCA_P_norm (mean control area per Provincial MD-node)')
 def OCA_P_norm(adj, mdset, top_nodes, cfg):
-    """
-    OCA_P normalised by number of Provincial MD-nodes.
-
-    = Σ|C(i)| / M_prov   (i ∈ Provincial MD-nodes only)
-
-    Interpretation: average nodes dominated per Provincial MD-node.
-    Removes the effect of how many Provincial nodes exist, isolating
-    per-node control efficiency within the Provincial subgroup.
-    """
     return _pc_classify(adj, mdset, cfg)['OCA_P_norm']
 
 
 @metric('OCA_C_norm', label='OCA_C_norm (mean control area per Connector MD-node)')
 def OCA_C_norm(adj, mdset, top_nodes, cfg):
-    """
-    OCA_C normalised by number of Connector MD-nodes.
-
-    = Σ|C(i)| / M_conn   (i ∈ Connector MD-nodes only)
-
-    Interpretation: average nodes dominated per Connector MD-node.
-    Removes the effect of how many Connector nodes exist, isolating
-    per-node control efficiency within the Connector subgroup.
-    """
     return _pc_classify(adj, mdset, cfg)['OCA_C_norm']
 
 
@@ -277,7 +280,7 @@ def _edges_upper(adj: np.ndarray) -> np.ndarray:
 
 
 def _maslov_sneppen_swaps(adj: np.ndarray, swaps_per_edge: int = 10,
-                          rng: np.random.Generator = None) -> np.ndarray:
+                           rng: np.random.Generator = None) -> np.ndarray:
     """
     Degree-preserving null via Maslov–Sneppen edge swaps.
     Input/output: full symmetric 0/1 adj, no self-loops.

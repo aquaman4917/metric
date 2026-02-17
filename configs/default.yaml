@@ -31,7 +31,6 @@ network:
   null_swaps_per_edge: 10     # Maslov–Sneppen swaps per edge
   null_seed: 0                # reproducibility (optional)
 
-  
 # --- Metrics (on/off) ---
 metrics:
   MDS_size: true
@@ -39,6 +38,8 @@ metrics:
   DC: true
   OCA: true
   OCA_norm: true
+  # Enable the new Normalized Overlap Redundancy (NOR) metric by default
+  NOR: true
   DC_cz: true
   OCA_cz: true
   OCA_norm_cz: false
